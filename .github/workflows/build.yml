@@ -1,0 +1,29 @@
+name: Build LEAN Image
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker image
+      run: |
+        docker build -t vibe-trade-lean:latest .
+        docker run --rm --entrypoint="" vibe-trade-lean:latest \
+          ls -la /Lean/Launcher/bin/Debug/PubSubDataQueueHandler.dll
+    
+    - name: Test LEAN launcher
+      run: |
+        docker run --rm vibe-trade-lean:latest --help
+
