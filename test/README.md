@@ -1,81 +1,46 @@
-# Testing vibe-trade-lean
+# Testing
 
-This directory contains test files to verify the custom LEAN image works with Pub/Sub.
+## Local Test (No Credentials Required)
 
-## Quick Test
-
-Quick verification that the handler is installed correctly:
+Test with local Pub/Sub emulator:
 
 ```bash
-./test/quick-test.sh
+make test-local
 ```
 
-This checks:
-- Docker image exists
-- `PubSubDataQueueHandler.dll` is present
-- LEAN launcher works
+This will:
+- Start a local Pub/Sub emulator
+- Seed test data (20 messages)
+- Run the handler against the emulator
+- Verify connection, subscription, and data reception
 
-## Full Integration Test
+## Production Test (Requires Credentials)
 
-Run a complete test with Pub/Sub integration:
-
-```bash
-# Set required environment variables
-export GOOGLE_CLOUD_PROJECT=your-project-id
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json
-
-# Run the test
-./test/run-test.sh
-```
-
-Or use the Makefile:
+Test with production Pub/Sub:
 
 ```bash
 export GOOGLE_CLOUD_PROJECT=your-project-id
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json
-make test-integration
+export PUBSUB_TEST_SYMBOL=BTC-USD  # Optional
+export PUBSUB_TEST_SUBSCRIPTION=test_local  # Optional
+
+make test
 ```
 
-## What the Test Does
+## What It Tests
 
-1. **Builds test image**: Creates a Docker image with test algorithm
-2. **Runs algorithm**: Starts LEAN with Pub/Sub data queue handler
-3. **Subscribes to Pub/Sub**: Attempts to connect to `vibe-trade-candles-btc-usd-1m` topic
-4. **Receives data**: Logs incoming data from Pub/Sub
-5. **Verifies handler**: Confirms the handler is working
-
-## Expected Output
-
-You should see:
-- ✅ Algorithm initialized
-- 📊 Symbol: BTC-USD.TradeBar
-- 🔍 Waiting for data from Pub/Sub...
-- 📈 Received data messages (if Pub/Sub topic has data)
-- 🟢 LIVE MODE confirmation (if handler is working)
+- ✅ Handler connects to Pub/Sub (emulator or production)
+- ✅ Handler subscribes to correct topic/subscription
+- ✅ Data is received from Pub/Sub
+- ✅ Data reaches algorithm
 
 ## Test Files
 
-- `algorithm.py`: Test algorithm that subscribes to BTC-USD data
-- `config.json`: LEAN configuration with Pub/Sub handler
-- `data/`: Test data files (market hours, symbol properties)
-- `quick-test.sh`: Quick verification script
-- `run-test.sh`: Full integration test script
+- `algorithm.py` - Test algorithm that subscribes to data
+- `config.json` - LEAN configuration with Pub/Sub handler
+- `data/` - LEAN data files (market hours, symbol properties)
 
-## Troubleshooting
+## Results
 
-### Handler Not Loading
-- Check that `PubSubDataQueueHandler.dll` exists in the image
-- Verify config.json has correct handler name
-- Check LEAN logs for loading errors
-
-### Pub/Sub Connection Issues
-- Verify `GOOGLE_CLOUD_PROJECT` is set
-- Check GCP credentials are valid
-- Ensure Pub/Sub API is enabled
-- Verify topic `vibe-trade-candles-btc-usd-1m` exists
-
-### No Data Received
-- Check if topic has messages
-- Verify subscription was created
-- Check Pub/Sub console for message flow
-- Review LEAN logs for errors
+- Logs: `/tmp/lean-test-*.log` or `/tmp/lean-test-local-*.log`
+- Results: `test/results/`

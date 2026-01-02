@@ -137,6 +137,35 @@ In your LEAN `config.json`, set the data queue handler:
 }
 ```
 
+## Subscription Management
+
+**Important**: Subscriptions must be created **before** running LEAN. The handler will fail fast if a subscription does not exist.
+
+### For Production
+
+Use Terraform, Cloud Console, or `gcloud` CLI to create subscriptions:
+
+```bash
+# Example: Create subscription for BTC-USD 1-minute candles
+gcloud pubsub subscriptions create vibe-trade-lean-btc-usd-1m \
+  --topic=vibe-trade-candles-btc-usd-1m \
+  --ack-deadline=60
+```
+
+Or via Terraform:
+```hcl
+resource "google_pubsub_subscription" "btc_usd_1m" {
+  name  = "vibe-trade-lean-btc-usd-1m"
+  topic = "vibe-trade-candles-btc-usd-1m"
+  
+  ack_deadline_seconds = 60
+}
+```
+
+### For Testing
+
+The test setup automatically creates subscriptions via `docker-compose.test.yml` and `test/seed-emulator.sh`. See the Testing section below.
+
 ## Pub/Sub Topic Format
 
 The handler automatically generates topic and subscription names based on the symbol and resolution:

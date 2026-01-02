@@ -83,17 +83,27 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 return;
             }
 
-            var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
-            if (string.IsNullOrEmpty(credentialsPath))
+            // Check if using emulator (credentials not required)
+            var emulatorHost = Environment.GetEnvironmentVariable("PUBSUB_EMULATOR_HOST");
+            if (string.IsNullOrEmpty(emulatorHost))
             {
-                Log.Error("PubSubDataQueueHandler: GOOGLE_APPLICATION_CREDENTIALS environment variable is required");
-                return;
-            }
+                // Production mode: credentials required
+                var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+                if (string.IsNullOrEmpty(credentialsPath))
+                {
+                    Log.Error("PubSubDataQueueHandler: GOOGLE_APPLICATION_CREDENTIALS environment variable is required");
+                    return;
+                }
 
-            if (!System.IO.File.Exists(credentialsPath))
+                if (!System.IO.File.Exists(credentialsPath))
+                {
+                    Log.Error($"PubSubDataQueueHandler: Credentials file not found: {credentialsPath}");
+                    return;
+                }
+            }
+            else
             {
-                Log.Error($"PubSubDataQueueHandler: Credentials file not found: {credentialsPath}");
-                return;
+                Log.Trace("PubSubDataQueueHandler: Emulator mode detected - credentials not required");
             }
         }
 
@@ -106,11 +116,23 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 return Enumerable.Empty<BaseData>().GetEnumerator();
             }
 
+            // Check if using emulator (credentials not required)
+            var emulatorHost = Environment.GetEnvironmentVariable("PUBSUB_EMULATOR_HOST");
             var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
-            if (string.IsNullOrEmpty(credentialsPath) || !System.IO.File.Exists(credentialsPath))
+            
+            if (string.IsNullOrEmpty(emulatorHost))
             {
-                Log.Error("PubSubDataQueueHandler: Cannot subscribe - GOOGLE_APPLICATION_CREDENTIALS not set or file not found");
-                return Enumerable.Empty<BaseData>().GetEnumerator();
+                // Production mode: credentials required
+                if (string.IsNullOrEmpty(credentialsPath) || !System.IO.File.Exists(credentialsPath))
+                {
+                    Log.Error("PubSubDataQueueHandler: Cannot subscribe - GOOGLE_APPLICATION_CREDENTIALS not set or file not found");
+                    return Enumerable.Empty<BaseData>().GetEnumerator();
+                }
+            }
+            else
+            {
+                // Emulator mode: use dummy credentials path (won't be used)
+                credentialsPath = credentialsPath ?? "/dev/null";
             }
 
             if (!_isConnected || _restApiClient == null)
@@ -258,6 +280,22 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             try
             {
                 var handler = new SocketsHttpHandler();
+                
+                // Check for emulator (PUBSUB_EMULATOR_HOST format: localhost:8085)
+                var emulatorHost = Environment.GetEnvironmentVariable("PUBSUB_EMULATOR_HOST");
+                if (!string.IsNullOrEmpty(emulatorHost))
+                {
+                    // Emulator uses HTTP, not HTTPS, and doesn't require authentication
+                    _restApiClient = new HttpClient(handler)
+                    {
+                        BaseAddress = new Uri($"http://{emulatorHost}/v1/")
+                    };
+                    Log.Trace($"PubSubDataQueueHandler: Using emulator at {emulatorHost}");
+                    _accessToken = null; // No auth needed for emulator
+                    return true;
+                }
+                
+                // Production: use HTTPS with authentication
                 _restApiClient = new HttpClient(handler)
                 {
                     BaseAddress = new Uri("https://pubsub.googleapis.com/v1/")
@@ -501,19 +539,21 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         {
             try
             {
-                // Try to verify subscription exists (non-blocking)
-                try
+                // Verify subscription exists - subscriptions must be created before running
+                // For production: use Terraform/IaC to create subscriptions
+                // For testing: use docker-compose.test.yml and seed-emulator.sh
+                var subscription = await GetSubscriptionViaRestApi(subscriptionPath);
+                if (subscription == null)
                 {
-                    var subscription = await GetSubscriptionViaRestApi(subscriptionPath);
-                    if (subscription == null && subscriptionName != "test_local")
-                    {
-                        await CreateSubscriptionViaRestApi(subscriptionPath, topicPath);
-                    }
+                    var errorMsg = $"PubSubDataQueueHandler: Subscription '{subscriptionName}' does not exist. " +
+                                  $"Subscriptions must be created before running. " +
+                                  $"For testing, ensure docker-compose.test.yml has created the subscription. " +
+                                  $"For production, use Terraform/IaC to manage subscriptions.";
+                    Log.Error(errorMsg);
+                    throw new Exception(errorMsg);
                 }
-                catch
-                {
-                    // Continue even if we can't verify subscription
-                }
+                
+                Log.Trace($"PubSubDataQueueHandler: Verified subscription {subscriptionName} exists");
                 
                 while (!cancellationToken.IsCancellationRequested)
                 {
@@ -625,7 +665,10 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 await EnsureAccessToken();
                 
                 var request = new HttpRequestMessage(HttpMethod.Get, subscriptionPath);
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
+                if (!string.IsNullOrEmpty(_accessToken))
+                {
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
+                }
                 
                 var response = await _restApiClient.SendAsync(request);
                 if (response.IsSuccessStatusCode)
@@ -639,33 +682,6 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             catch
             {
                 return null;
-            }
-        }
-        
-        private async Task<bool> CreateSubscriptionViaRestApi(string subscriptionPath, string topicPath)
-        {
-            try
-            {
-                await EnsureAccessToken();
-                
-                var subscriptionBody = new
-                {
-                    topic = topicPath,
-                    ackDeadlineSeconds = 60
-                };
-                
-                var request = new HttpRequestMessage(HttpMethod.Put, subscriptionPath)
-                {
-                    Content = new StringContent(JsonConvert.SerializeObject(subscriptionBody), Encoding.UTF8, "application/json")
-                };
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
-                
-                var response = await _restApiClient.SendAsync(request);
-                return response.IsSuccessStatusCode;
-            }
-            catch
-            {
-                return false;
             }
         }
         
@@ -685,7 +701,10 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 {
                     Content = new StringContent(JsonConvert.SerializeObject(pullBody), Encoding.UTF8, "application/json")
                 };
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
+                if (!string.IsNullOrEmpty(_accessToken))
+                {
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
+                }
                 
                 var response = await _restApiClient.SendAsync(request);
                 if (response.IsSuccessStatusCode)
@@ -728,7 +747,10 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 {
                     Content = new StringContent(JsonConvert.SerializeObject(ackBody), Encoding.UTF8, "application/json")
                 };
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
+                if (!string.IsNullOrEmpty(_accessToken))
+                {
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
+                }
                 
                 var response = await _restApiClient.SendAsync(request);
                 if (!response.IsSuccessStatusCode)
@@ -745,6 +767,13 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         
         private async Task EnsureAccessToken()
         {
+            // Skip auth for emulator
+            var emulatorHost = Environment.GetEnvironmentVariable("PUBSUB_EMULATOR_HOST");
+            if (!string.IsNullOrEmpty(emulatorHost))
+            {
+                return;
+            }
+            
             if (string.IsNullOrEmpty(_accessToken) || _tokenExpiry <= DateTime.UtcNow.AddMinutes(5))
             {
                 _accessToken = await GetAccessToken(_credentialData);
