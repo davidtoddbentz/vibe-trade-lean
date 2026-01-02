@@ -1,0 +1,39 @@
+{
+  "environment": "live-pubsub",
+  "algorithm-type-name": "PubSubTestAlgorithm",
+  "algorithm-language": "Python",
+  "algorithm-location": "/Lean/Algorithm.Python/algorithm.py",
+  "data-folder": "/Data",
+  "results-destination-folder": "/Results",
+  "job-user-id": "0",
+  "api-access-token": "",
+  "job-organization-id": "",
+  "live-data-url": "ws://localhost:8020/",
+  "live-data-port": 8020,
+  "force-exchange-always-open": true,
+  "environments": {
+    "live-pubsub": {
+      "live-mode": true,
+      "live-mode-brokerage": "PaperBrokerage",
+      "setup-handler": "QuantConnect.Lean.Engine.Setup.BrokerageSetupHandler",
+      "result-handler": "QuantConnect.Lean.Engine.Results.LiveTradingResultHandler",
+      "data-feed-handler": "QuantConnect.Lean.Engine.DataFeeds.LiveTradingDataFeed",
+      "data-queue-handler": "QuantConnect.Lean.Engine.DataFeeds.PubSubDataQueueHandler",
+      "real-time-handler": "QuantConnect.Lean.Engine.RealTime.LiveTradingRealTimeHandler",
+      "transaction-handler": "QuantConnect.Lean.Engine.TransactionHandlers.BacktestingTransactionHandler",
+      "log-handler": "QuantConnect.Logging.CompositeLogHandler",
+      "messaging-handler": "QuantConnect.Messaging.Messaging",
+      "job-queue-handler": "QuantConnect.Queues.JobQueue",
+      "api-handler": "QuantConnect.Api.Api",
+      "map-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider",
+      "factor-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider",
+      "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+      "object-store": "QuantConnect.Lean.Engine.Storage.LocalObjectStore",
+      "data-aggregator": "QuantConnect.Lean.Engine.DataFeeds.AggregationManager"
+    }
+  },
+  "symbol-minute-limit": 10000,
+  "symbol-second-limit": 10000,
+  "symbol-tick-limit": 10000
+}
+

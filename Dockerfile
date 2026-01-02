@@ -1,0 +1,75 @@
+# Custom LEAN Docker image with Pub/Sub support
+FROM quantconnect/lean:latest
+
+# Set environment variable to force SocketsHttpHandler on Linux
+# This must be set at the Docker level, not just in C# code
+ENV DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER=1
+ENV DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT=1
+
+# Install Python dependencies for Pub/Sub (for Python algorithms)
+RUN (python3 -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
+     python -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
+     pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
+     /usr/bin/python3 -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null) && \
+    echo "✅ Pub/Sub Python library installed"
+
+# Create directory for C# handler compilation
+RUN mkdir -p /Lean/CustomDataQueueHandler
+
+# Copy C# handler source and project file
+COPY src/DataFeeds/PubSubDataQueueHandler.cs /Lean/CustomDataQueueHandler/
+COPY csproj/PubSubDataQueueHandler.csproj /Lean/CustomDataQueueHandler/
+
+# Compile C# handler
+# Note: LEAN base image should have .NET SDK
+RUN if command -v dotnet >/dev/null 2>&1; then \
+        echo "🔨 Compiling C# data queue handler..."; \
+        cd /Lean/CustomDataQueueHandler && \
+        dotnet restore && \
+        dotnet build -c Release && \
+        if [ -f bin/Release/net10.0/PubSubDataQueueHandler.dll ]; then \
+            cp bin/Release/net10.0/PubSubDataQueueHandler.dll /Lean/Launcher/bin/Debug/ && \
+            echo "✅ C# handler compiled and copied to /Lean/Launcher/bin/Debug/"; \
+            # Copy all Google.*, Grpc.*, and Microsoft.Extensions.* dependencies from NuGet packages \
+            NUGET_DIR=~/.nuget/packages; \
+            if [ ! -d "$NUGET_DIR" ]; then NUGET_DIR=/root/.nuget/packages; fi; \
+            if [ -d "$NUGET_DIR" ]; then \
+                # Copy all DLLs matching Google.*, Grpc.*, or Microsoft.Extensions.* patterns \
+                find "$NUGET_DIR" -name "Google*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                find "$NUGET_DIR" -name "Grpc*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                find "$NUGET_DIR" -name "Microsoft.Extensions.Logging*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                find "$NUGET_DIR" -name "Microsoft.Extensions.*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                find "$NUGET_DIR" -name "System.Net.Http*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                # Copy from bin/Release if present \
+                find bin/Release -name "Google*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                find bin/Release -name "Grpc*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                find bin/Release -name "Microsoft.Extensions.Logging*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+                find bin/Release -name "System.Net.Http*.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+            fi; \
+            echo "✅ Dependencies copied"; \
+        elif [ -f bin/Release/net*/PubSubDataQueueHandler.dll ]; then \
+            cp bin/Release/net*/PubSubDataQueueHandler.dll /Lean/Launcher/bin/Debug/ && \
+            echo "✅ C# handler compiled and copied (auto-detected .NET version)"; \
+            # Copy dependencies \
+            find ~/.nuget/packages -name "Google.Cloud.PubSub.V1.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || \
+            find /root/.nuget/packages -name "Google.Cloud.PubSub.V1.dll" -exec cp {} /Lean/Launcher/bin/Debug/ \; 2>/dev/null || true; \
+        else \
+            echo "⚠️  DLL not found after build - check compilation errors above"; \
+            exit 1; \
+        fi; \
+    else \
+        echo "❌ dotnet not found - cannot compile C# handler"; \
+        exit 1; \
+    fi
+
+# Verify DLL was copied
+RUN if [ -f /Lean/Launcher/bin/Debug/PubSubDataQueueHandler.dll ]; then \
+        echo "✅ Verified: PubSubDataQueueHandler.dll is in LEAN directory"; \
+    else \
+        echo "❌ ERROR: PubSubDataQueueHandler.dll not found"; \
+        exit 1; \
+    fi
+
+# Note: We preserve the base image's entrypoint and working directory
+# The base image uses /Lean/Launcher/bin/Debug as working directory
+

@@ -1,0 +1,44 @@
+# Build artifacts
+*.dll
+*.pdb
+*.exe
+bin/
+obj/
+*.csproj.user
+
+# Test results
+test/results/
+*.log
+*.tmp
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+*.tar
+*.tar.gz
+
+# Credentials (NEVER commit these)
+*.json
+!test/config.json
+!test/data/**/*.json
+!test/data/**/*.csv
+credentials.json
+*-key.json
+gcp-credentials.json
+lean-pubsub-key.json
+
+# Temporary files
+*.bak
+*.orig
+test-assembly-load.cs
+test-debug.sh
