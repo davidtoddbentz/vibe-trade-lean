@@ -64,9 +64,46 @@ docker build -t vibe-trade-lean:latest .
 
 ### Environment Variables
 
-- `GOOGLE_CLOUD_PROJECT`: Your GCP project ID (required)
-- `GOOGLE_APPLICATION_CREDENTIALS`: Path to GCP service account JSON file (required)
-- `PUBSUB_TEST_SUBSCRIPTION`: Override subscription name for testing (optional)
+**Required:**
+- `GOOGLE_CLOUD_PROJECT`: Your GCP project ID
+- `GOOGLE_APPLICATION_CREDENTIALS`: Path to GCP service account JSON file
+
+**Optional - Subscription Configuration:**
+- `PUBSUB_TEST_SUBSCRIPTION`: Global subscription name override (backward compatibility)
+- `PUBSUB_SUBSCRIPTION_{SYMBOL}`: Per-symbol subscription override (e.g., `PUBSUB_SUBSCRIPTION_BTC_USD=test_local_btc`)
+- `PUBSUB_TOPIC_{SYMBOL}`: Per-symbol topic override (e.g., `PUBSUB_TOPIC_ETH_USD=vibe-trade-candles-eth-usd-1m`)
+- `PUBSUB_TOPIC_PATTERN`: Global topic pattern with `{symbol}` and `{resolution}` placeholders
+
+**Optional - Algorithm Configuration:**
+- `PUBSUB_TEST_SYMBOL`: Symbol to use in test algorithm (default: `BTC-USD`)
+
+### Subscription Name Resolution
+
+The handler resolves subscription names in this order:
+1. `PUBSUB_SUBSCRIPTION_{SYMBOL}` (e.g., `PUBSUB_SUBSCRIPTION_ETH_USD=test_local_eth`)
+2. `PUBSUB_TEST_SUBSCRIPTION` (global override)
+3. Auto-generated: `vibe-trade-lean-{symbol}-{resolution}`
+
+### Topic Name Resolution
+
+The handler resolves topic names in this order:
+1. `PUBSUB_TOPIC_{SYMBOL}` (per-symbol override)
+2. `PUBSUB_TOPIC_PATTERN` with placeholders
+3. Default: `vibe-trade-candles-{symbol}-{resolution}`
+
+### Examples
+
+**Using ETH-USD with custom subscription:**
+```bash
+export PUBSUB_SUBSCRIPTION_ETH_USD=test_local_eth
+export PUBSUB_TEST_SYMBOL=ETH-USD
+```
+
+**Using custom topic pattern:**
+```bash
+export PUBSUB_TOPIC_PATTERN="my-topic-{symbol}-{resolution}"
+# Results in: my-topic-btc-usd-1m
+```
 
 ### Running LEAN with Pub/Sub
 
@@ -102,12 +139,25 @@ In your LEAN `config.json`, set the data queue handler:
 
 ## Pub/Sub Topic Format
 
-The handler expects topics in the format:
-- **Topic**: `vibe-trade-candles-{symbol}-1m` (e.g., `vibe-trade-candles-btc-usd-1m`)
-- **Subscription**: `vibe-trade-lean-{symbol}-1m` (auto-created if needed)
+The handler automatically generates topic and subscription names based on the symbol and resolution:
 
-Symbols are normalized:
-- `BTCUSD` → `BTC-USD` → `vibe-trade-candles-btc-usd-1m`
+**Default Format:**
+- **Topic**: `vibe-trade-candles-{symbol}-{resolution}` (e.g., `vibe-trade-candles-btc-usd-1m`)
+- **Subscription**: `vibe-trade-lean-{symbol}-{resolution}` (e.g., `vibe-trade-lean-btc-usd-1m`)
+
+**Symbol Normalization:**
+- `BTCUSD` → `BTC-USD` → `btc-usd` (for topic names)
+- `ETH.USD` → `ETH-USD` → `eth-usd`
+- Dots and dashes are normalized automatically
+
+**Resolution Format:**
+- Seconds: `30s`, `60s`
+- Minutes: `1m`, `5m`, `15m`, `60m`
+- Hours: `1h`, `4h`, `24h`
+- Days: `1d`
+
+**Customization:**
+You can override topic/subscription names per symbol using environment variables (see Configuration section above).
 
 ## Message Format
 

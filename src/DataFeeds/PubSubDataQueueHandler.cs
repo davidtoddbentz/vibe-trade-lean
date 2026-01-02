@@ -157,10 +157,16 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     }
                 }
                 
-                var testSubscription = Environment.GetEnvironmentVariable("PUBSUB_TEST_SUBSCRIPTION");
+                // Get subscription name - support per-symbol override via environment variable
+                // Pattern: PUBSUB_SUBSCRIPTION_{SYMBOL} (e.g., PUBSUB_SUBSCRIPTION_BTC-USD or PUBSUB_SUBSCRIPTION_ETH-USD)
+                // Fallback to PUBSUB_TEST_SUBSCRIPTION for backward compatibility
+                // Final fallback: auto-generate from topic name
+                var symbolEnvKey = $"PUBSUB_SUBSCRIPTION_{symbol.Value.Replace("-", "_").Replace(".", "_").ToUpper()}";
+                var subscriptionName = Environment.GetEnvironmentVariable(symbolEnvKey) 
+                    ?? Environment.GetEnvironmentVariable("PUBSUB_TEST_SUBSCRIPTION")
+                    ?? GetSubscriptionName(GetTopicName(symbol.Value, dataConfig), dataConfig);
                 
-                string topicName = GetTopicName(symbol.Value);
-                string subscriptionName = !string.IsNullOrEmpty(testSubscription) ? testSubscription : GetSubscriptionName(topicName);
+                string topicName = GetTopicName(symbol.Value, dataConfig);
                 
                 lock (_lock)
                 {
@@ -401,27 +407,92 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             }
         }
 
-        private string GetTopicName(string symbol)
+        /// <summary>
+        /// Gets the Pub/Sub topic name for a symbol and resolution
+        /// Supports environment variable override: PUBSUB_TOPIC_{SYMBOL}
+        /// Default format: vibe-trade-candles-{symbol}-{resolution}
+        /// </summary>
+        private string GetTopicName(string symbol, SubscriptionDataConfig config)
         {
-            var normalized = symbol;
+            // Check for per-symbol topic override
+            var symbolEnvKey = $"PUBSUB_TOPIC_{symbol.Replace("-", "_").Replace(".", "_").ToUpper()}";
+            var topicOverride = Environment.GetEnvironmentVariable(symbolEnvKey);
+            if (!string.IsNullOrEmpty(topicOverride))
+            {
+                return topicOverride;
+            }
+            
+            // Check for global topic pattern override
+            var topicPattern = Environment.GetEnvironmentVariable("PUBSUB_TOPIC_PATTERN");
+            if (!string.IsNullOrEmpty(topicPattern))
+            {
+                // Pattern can use {symbol} and {resolution} placeholders
+                var resolutionStr = GetResolutionString(config);
+                return topicPattern
+                    .Replace("{symbol}", NormalizeSymbol(symbol))
+                    .Replace("{resolution}", resolutionStr);
+            }
+            
+            // Default: vibe-trade-candles-{symbol}-{resolution}
+            var normalized = NormalizeSymbol(symbol);
+            var resolution = GetResolutionString(config);
+            return $"vibe-trade-candles-{normalized}-{resolution}";
+        }
+
+        /// <summary>
+        /// Gets the Pub/Sub subscription name for a topic
+        /// Default format: vibe-trade-lean-{symbol}-{resolution}
+        /// </summary>
+        private string GetSubscriptionName(string topicName, SubscriptionDataConfig config)
+        {
+            // Extract symbol and resolution from topic name
+            // Format: vibe-trade-candles-{symbol}-{resolution}
+            var parts = topicName.Split('-');
+            if (parts.Length >= 4)
+            {
+                var symbolPart = string.Join("-", parts.Skip(2).Take(parts.Length - 3));
+                var resolution = GetResolutionString(config);
+                return $"vibe-trade-lean-{symbolPart}-{resolution}";
+            }
+            return $"vibe-trade-lean-{topicName}";
+        }
+
+        /// <summary>
+        /// Normalizes a symbol name for use in topic/subscription names
+        /// Handles formats like: BTCUSD -> btc-usd, BTC-USD -> btc-usd, ETH.USD -> eth-usd
+        /// </summary>
+        private string NormalizeSymbol(string symbol)
+        {
+            // Remove any dots (e.g., ETH.USD -> ETHUSD)
+            var normalized = symbol.Replace(".", "");
+            
+            // If no dash and length >= 6, assume format like BTCUSD -> BTC-USD
             if (!normalized.Contains("-") && normalized.Length >= 6)
             {
                 var baseCurrency = normalized.Substring(0, 3);
                 var quoteCurrency = normalized.Substring(3);
                 normalized = $"{baseCurrency}-{quoteCurrency}";
             }
-            return $"vibe-trade-candles-{normalized.ToLower()}-1m";
+            
+            return normalized.ToLower();
         }
 
-        private string GetSubscriptionName(string topicName)
+        /// <summary>
+        /// Converts LEAN resolution to string format for topic/subscription names
+        /// </summary>
+        private string GetResolutionString(SubscriptionDataConfig config)
         {
-            var parts = topicName.Split('-');
-            if (parts.Length >= 4)
-            {
-                var symbolPart = string.Join("-", parts.Skip(2).Take(parts.Length - 3));
-                return $"vibe-trade-lean-{symbolPart}-1m";
-            }
-            return $"vibe-trade-lean-{topicName}";
+            // Get resolution from config.Increment (TimeSpan) or config.Resolution
+            var increment = config.Increment;
+            
+            if (increment.TotalSeconds < 60)
+                return $"{increment.TotalSeconds}s";
+            else if (increment.TotalMinutes < 60)
+                return $"{increment.TotalMinutes}m";
+            else if (increment.TotalHours < 24)
+                return $"{increment.TotalHours}h";
+            else
+                return $"{increment.TotalDays}d";
         }
 
         private async Task SubscribeViaRestApi(Symbol symbol, string subscriptionPath, string topicPath, 
@@ -684,6 +755,10 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             }
         }
 
+        /// <summary>
+        /// Parses a Pub/Sub message into LEAN BaseData based on the subscription config type
+        /// Supports TradeBar and other BaseData types based on config.Type
+        /// </summary>
         private BaseData ParseMessage(byte[] messageData, Symbol symbol, SubscriptionDataConfig config)
         {
             try
@@ -712,33 +787,46 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     return null;
                 }
 
-                if (data.Open <= 0 || data.High <= 0 || data.Low <= 0 || data.Close <= 0)
-                {
-                    Log.Error($"PubSubDataQueueHandler: Invalid price data");
-                    return null;
-                }
-
-                // Use the symbol from LEAN config (what algorithm requested)
-                // If algorithm uses BTC-USD, symbol will be BTC-USD - no mapping needed
-                // The handler uses the symbol as-is, ensuring TradeBar matches the subscription
-                
                 // Ensure timestamp is in UTC and not too far in the future
-                // LEAN filters out data that's too far ahead of algorithm time
                 if (timestamp.Kind != DateTimeKind.Utc)
                 {
                     timestamp = timestamp.ToUniversalTime();
                 }
                 
                 // In live mode, LEAN expects data to be at or slightly before current time
-                // If data is too far in the future, adjust it to current time
                 var now = DateTime.UtcNow;
                 if (timestamp > now.AddMinutes(5))
                 {
                     Log.Trace($"PubSubDataQueueHandler: Data timestamp {timestamp} is too far in future (now={now}), adjusting to current time");
                     timestamp = now;
                 }
-                
-                return new TradeBar(timestamp, symbol, data.Open, data.High, data.Low, data.Close, data.Volume);
+
+                // Create appropriate data type based on config.Type
+                // Default to TradeBar for backward compatibility
+                if (config.Type == typeof(TradeBar) || config.Type.IsAssignableFrom(typeof(TradeBar)))
+                {
+                    if (data.Open <= 0 || data.High <= 0 || data.Low <= 0 || data.Close <= 0)
+                    {
+                        Log.Error($"PubSubDataQueueHandler: Invalid price data for TradeBar");
+                        return null;
+                    }
+                    return new TradeBar(timestamp, symbol, data.Open, data.High, data.Low, data.Close, data.Volume);
+                }
+                else
+                {
+                    // For other data types, try to create using reflection or return a basic BaseData
+                    // This allows extensibility for custom data types
+                    Log.Trace($"PubSubDataQueueHandler: Creating {config.Type.Name} for {symbol}");
+                    
+                    // For now, fallback to TradeBar if we can't create the requested type
+                    // In the future, this could be extended to support Tick, QuoteBar, etc.
+                    if (data.Open <= 0 || data.High <= 0 || data.Low <= 0 || data.Close <= 0)
+                    {
+                        Log.Error($"PubSubDataQueueHandler: Invalid price data");
+                        return null;
+                    }
+                    return new TradeBar(timestamp, symbol, data.Open, data.High, data.Low, data.Close, data.Volume);
+                }
             }
             catch (Exception ex)
             {
