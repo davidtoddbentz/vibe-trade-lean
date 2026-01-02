@@ -28,7 +28,13 @@ docker build -t vibe-trade-lean-test:latest -f test/Dockerfile .
 echo ""
 echo "🚀 Running test container..."
 echo "   This will attempt to connect to Pub/Sub and receive data"
-echo "   Press Ctrl+C to stop"
+echo "   Press Ctrl+C to stop early"
+echo ""
+
+# Generate log filename with timestamp
+LOG_FILE="/tmp/lean-test-$(date +%Y%m%d-%H%M%S).log"
+echo "   Logging to: $LOG_FILE"
+echo "   Results will be saved to: test/results/"
 echo ""
 
 docker run --rm -it \
@@ -38,7 +44,7 @@ docker run --rm -it \
     -v "$(pwd)/test/results:/Results" \
     ${GOOGLE_APPLICATION_CREDENTIALS:+-v "$GOOGLE_APPLICATION_CREDENTIALS:$GOOGLE_APPLICATION_CREDENTIALS:ro"} \
     vibe-trade-lean-test:latest \
-    --config /Lean/Launcher/bin/Debug/config.json
+    --config /Lean/Launcher/bin/Debug/config.json 2>&1 | tee "$LOG_FILE"
 
 echo ""
 echo "✅ Test complete! Check test/results/ for output files"
