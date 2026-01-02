@@ -4,18 +4,36 @@ This directory contains test files to verify the custom LEAN image works with Pu
 
 ## Quick Test
 
-```bash
-# Set GCP project
-export GOOGLE_CLOUD_PROJECT=your-project-id
+Quick verification that the handler is installed correctly:
 
-# Set credentials (if not using default)
+```bash
+./test/quick-test.sh
+```
+
+This checks:
+- Docker image exists
+- `PubSubDataQueueHandler.dll` is present
+- LEAN launcher works
+
+## Full Integration Test
+
+Run a complete test with Pub/Sub integration:
+
+```bash
+# Set required environment variables
+export GOOGLE_CLOUD_PROJECT=your-project-id
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json
 
-# Run test
-make test-integration
-
-# Or manually
+# Run the test
 ./test/run-test.sh
+```
+
+Or use the Makefile:
+
+```bash
+export GOOGLE_CLOUD_PROJECT=your-project-id
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json
+make test-integration
 ```
 
 ## What the Test Does
@@ -30,10 +48,18 @@ make test-integration
 
 You should see:
 - ✅ Algorithm initialized
-- 📊 Symbol: BTCUSD
+- 📊 Symbol: BTC-USD.TradeBar
 - 🔍 Waiting for data from Pub/Sub...
 - 📈 Received data messages (if Pub/Sub topic has data)
 - 🟢 LIVE MODE confirmation (if handler is working)
+
+## Test Files
+
+- `algorithm.py`: Test algorithm that subscribes to BTC-USD data
+- `config.json`: LEAN configuration with Pub/Sub handler
+- `data/`: Test data files (market hours, symbol properties)
+- `quick-test.sh`: Quick verification script
+- `run-test.sh`: Full integration test script
 
 ## Troubleshooting
 
@@ -53,11 +79,3 @@ You should see:
 - Verify subscription was created
 - Check Pub/Sub console for message flow
 - Review LEAN logs for errors
-
-## Files
-
-- `algorithm.py`: Test algorithm that uses Pub/Sub data
-- `config.json`: LEAN configuration with Pub/Sub handler
-- `Dockerfile`: Test image definition
-- `run-test.sh`: Test execution script
-
