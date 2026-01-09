@@ -6,6 +6,7 @@
  */
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Linq;
@@ -43,6 +44,11 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         // Global event handler for notifying LEAN of new data
         // LEAN's LiveSubscriptionEnumerator uses this to know when to call MoveNext()
         private EventHandler _globalDataAvailableHandler;
+        
+        // Track subscription start time to align data timestamps with algorithm time
+        private DateTime _subscriptionStartTime;
+        private int _messageCount; // Track message count to ensure unique timestamps
+        private DateTime? _lastTimestamp; // Track last timestamp to ensure monotonicity
         
         private HttpClient _restApiClient;
         private string _accessToken;
@@ -198,6 +204,18 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 var subscriptionPath = $"projects/{_projectId}/subscriptions/{subscriptionName}";
                 var topicPath = $"projects/{_projectId}/topics/{topicName}";
                 
+                // Create an EnqueueableEnumerator for this symbol FIRST
+                // This must be created before starting the background task
+                // LEAN's LiveSubscriptionEnumerator will call MoveNext() on this enumerator
+                // Use blocking: true - LEAN will wait for data when calling MoveNext()
+                // The event handler notification should trigger LEAN to call MoveNext() again
+                var enumerator = new EnqueueableEnumerator<BaseData>(blocking: true);
+                lock (_lock)
+                {
+                    _enumerators[symbol] = enumerator;
+                }
+                
+                // Start the background task to pull messages and enqueue them
                 var task = Task.Run(async () => await SubscribeViaRestApi(
                     symbol, subscriptionPath, topicPath, subscriptionName, topicName, 
                     dataConfig, newDataAvailableHandler, _cancellationTokenSource.Token));
@@ -206,19 +224,14 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 {
                     _subscriptionTasks[symbol] = task;
                 }
-
-                // Create an EnqueueableEnumerator for this symbol
-                // This is the pattern LEAN uses - we enqueue data when it arrives,
-                // and LEAN's LiveSubscriptionEnumerator calls MoveNext() to retrieve it
-                var enumerator = new EnqueueableEnumerator<BaseData>(blocking: false);
-                lock (_lock)
-                {
-                    _enumerators[symbol] = enumerator;
-                }
+                
+                // Wrap the enumerator to log when MoveNext() is called
+                // This helps us debug if LEAN is actually calling MoveNext()
+                var wrappedEnumerator = new LoggingEnumerator(enumerator, symbol);
                 
                 Log.Trace($"PubSubDataQueueHandler: Subscribed to {symbol} via {subscriptionName}");
                 
-                return enumerator;
+                return wrappedEnumerator;
             }
             catch (Exception ex)
             {
@@ -422,21 +435,25 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     assertion = jwt
                 };
                 
-                var request = new HttpRequestMessage(HttpMethod.Post, "https://oauth2.googleapis.com/token")
+                // Use a separate HttpClient for OAuth token exchange (different base URL)
+                using (var httpClient = new HttpClient(new SocketsHttpHandler()))
                 {
-                    Content = new StringContent(JsonConvert.SerializeObject(tokenRequest), Encoding.UTF8, "application/json")
-                };
-                
-                var response = await _restApiClient.SendAsync(request);
-                if (response.IsSuccessStatusCode)
-                {
-                    var content = await response.Content.ReadAsStringAsync();
-                    return JsonConvert.DeserializeObject<Dictionary<string, object>>(content);
+                    var request = new HttpRequestMessage(HttpMethod.Post, "https://oauth2.googleapis.com/token")
+                    {
+                        Content = new StringContent(JsonConvert.SerializeObject(tokenRequest), Encoding.UTF8, "application/json")
+                    };
+                    
+                    var response = await httpClient.SendAsync(request);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var content = await response.Content.ReadAsStringAsync();
+                        return JsonConvert.DeserializeObject<Dictionary<string, object>>(content);
+                    }
+                    
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Log.Error($"PubSubDataQueueHandler: Failed to exchange JWT: {response.StatusCode} - {errorContent}");
+                    return null;
                 }
-                
-                var errorContent = await response.Content.ReadAsStringAsync();
-                Log.Error($"PubSubDataQueueHandler: Failed to exchange JWT: {response.StatusCode} - {errorContent}");
-                return null;
             }
             catch (Exception ex)
             {
@@ -534,18 +551,42 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         }
 
         private async Task SubscribeViaRestApi(Symbol symbol, string subscriptionPath, string topicPath, 
-            string subscriptionName, string topicName, SubscriptionDataConfig config, 
+            string subscriptionName, string topicName, SubscriptionDataConfig config,
             EventHandler newDataAvailableHandler, CancellationToken cancellationToken)
         {
+            // Store the handler for this subscription
+            lock (_lock)
+            {
+                if (_globalDataAvailableHandler == null && newDataAvailableHandler != null)
+                {
+                    _globalDataAvailableHandler = newDataAvailableHandler;
+                }
+            }
+            
             try
             {
                 // Verify subscription exists - subscriptions must be created before running
                 // For production: use Terraform/IaC to create subscriptions
                 // For testing: use docker-compose.test.yml and seed-emulator.sh
-                var subscription = await GetSubscriptionViaRestApi(subscriptionPath);
+                // Retry a few times in case of timing issues (especially with emulator)
+                Dictionary<string, object> subscription = null;
+                int retries = 3;
+                for (int i = 0; i < retries; i++)
+                {
+                    subscription = await GetSubscriptionViaRestApi(subscriptionPath);
+                    if (subscription != null)
+                        break;
+                    
+                    if (i < retries - 1)
+                    {
+                        Log.Trace($"PubSubDataQueueHandler: Subscription not found, retrying ({i + 1}/{retries})...");
+                        await Task.Delay(1000); // Wait 1 second between retries
+                    }
+                }
+                
                 if (subscription == null)
                 {
-                    var errorMsg = $"PubSubDataQueueHandler: Subscription '{subscriptionName}' does not exist. " +
+                    var errorMsg = $"PubSubDataQueueHandler: Subscription '{subscriptionName}' does not exist after {retries} attempts. " +
                                   $"Subscriptions must be created before running. " +
                                   $"For testing, ensure docker-compose.test.yml has created the subscription. " +
                                   $"For production, use Terraform/IaC to manage subscriptions.";
@@ -555,14 +596,25 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 
                 Log.Trace($"PubSubDataQueueHandler: Verified subscription {subscriptionName} exists");
                 
+                // Reset message count for this subscription
+                // Message count is used to ensure unique timestamps (LEAN filters duplicates)
+                lock (_lock)
+                {
+                    _messageCount = 0;
+                }
+                
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     try
                     {
-                        var messages = await PullMessagesViaRestApi(subscriptionPath, maxMessages: 10);
+                        // Pull only 1 message at a time to avoid overwhelming LEAN
+                        // LEAN processes data slowly (calls MoveNext() infrequently)
+                        // Pulling too many messages causes the queue to grow unbounded
+                        var messages = await PullMessagesViaRestApi(subscriptionPath, maxMessages: 1);
                         
                         if (messages != null && messages.Count > 0)
                         {
+                            Log.Trace($"PubSubDataQueueHandler: Pulled {messages.Count} message(s) for {symbol} - starting to process");
                             var ackIds = new List<string>();
                             
                             foreach (var message in messages)
@@ -598,6 +650,8 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                                             if (_enumerators.TryGetValue(symbol, out enumerator))
                                             {
                                                 enumerator.Enqueue(data);
+                                                var queueSize = enumerator.Count;
+                                                Log.Trace($"PubSubDataQueueHandler: Enqueued {data.GetType().Name} for {symbol} at {data.Time} (queue size: {queueSize})");
                                             }
                                             else
                                             {
@@ -607,22 +661,26 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                                         
                                         // Notify LEAN that new data is available
                                         // This triggers LiveSubscriptionEnumerator to call MoveNext()
-                                        EventHandler handlerToInvoke = null;
-                                        lock (_lock)
-                                        {
-                                            handlerToInvoke = _globalDataAvailableHandler ?? newDataAvailableHandler;
-                                        }
+                                        // Prefer the handler passed to this method, fall back to global handler
+                                        EventHandler handlerToInvoke = newDataAvailableHandler ?? _globalDataAvailableHandler;
                                         
                                         if (handlerToInvoke != null)
                                         {
                                             try
                                             {
+                                                // Invoke handler directly - LEAN's LiveSubscriptionEnumerator expects synchronous invocation
+                                                // The handler will trigger LEAN to call MoveNext() on the enumerator
                                                 handlerToInvoke.Invoke(this, EventArgs.Empty);
+                                                Log.Trace($"PubSubDataQueueHandler: Notified LEAN of new data for {symbol} (enumerator queue size: {enumerator?.Count ?? 0})");
                                             }
                                             catch (Exception ex)
                                             {
                                                 Log.Error($"PubSubDataQueueHandler: Error invoking data available handler: {ex.Message}");
                                             }
+                                        }
+                                        else
+                                        {
+                                            Log.Trace($"PubSubDataQueueHandler: No data available handler for {symbol}");
                                         }
                                     }
                                     
@@ -643,7 +701,10 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                             }
                         }
                         
-                        await Task.Delay(100, cancellationToken);
+                        // Delay between pulls to match LEAN's consumption rate
+                        // LEAN calls MoveNext() infrequently, so we should pull slowly
+                        // 500ms = 2 pulls/second, which should be sufficient and prevent queue buildup
+                        await Task.Delay(500, cancellationToken);
                     }
                     catch (Exception pullEx)
                     {
@@ -662,8 +723,15 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         {
             try
             {
-                await EnsureAccessToken();
+                // Skip auth for emulator
+                var emulatorHost = Environment.GetEnvironmentVariable("PUBSUB_EMULATOR_HOST");
+                if (string.IsNullOrEmpty(emulatorHost))
+                {
+                    await EnsureAccessToken();
+                }
                 
+                var fullUrl = $"{_restApiClient.BaseAddress}{subscriptionPath}";
+                Log.Trace($"PubSubDataQueueHandler: GetSubscription requesting: {fullUrl}");
                 var request = new HttpRequestMessage(HttpMethod.Get, subscriptionPath);
                 if (!string.IsNullOrEmpty(_accessToken))
                 {
@@ -676,11 +744,26 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     var content = await response.Content.ReadAsStringAsync();
                     return JsonConvert.DeserializeObject<Dictionary<string, object>>(content);
                 }
+                else if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    // 403 Forbidden: Subscription exists but we don't have permission to view metadata
+                    // This is OK - we can still pull messages if we have subscriber permission
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Log.Trace($"PubSubDataQueueHandler: GetSubscription returned Forbidden (subscription exists but no metadata permission): {errorContent}");
+                    // Return a dummy dict to indicate subscription exists (we just can't read its metadata)
+                    return new Dictionary<string, object> { { "_exists", true } };
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Log.Trace($"PubSubDataQueueHandler: GetSubscription returned {response.StatusCode}: {errorContent}");
+                }
                 
                 return null;
             }
-            catch
+            catch (Exception ex)
             {
+                Log.Trace($"PubSubDataQueueHandler: Error getting subscription: {ex.Message}");
                 return null;
             }
         }
@@ -689,7 +772,12 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         {
             try
             {
-                await EnsureAccessToken();
+                // Skip auth for emulator
+                var emulatorHost = Environment.GetEnvironmentVariable("PUBSUB_EMULATOR_HOST");
+                if (string.IsNullOrEmpty(emulatorHost))
+                {
+                    await EnsureAccessToken();
+                }
                 
                 var pullBody = new
                 {
@@ -715,10 +803,21 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     if (result != null && result.ContainsKey("receivedMessages"))
                     {
                         var messages = result["receivedMessages"] as JArray;
-                        if (messages != null)
+                        if (messages != null && messages.Count > 0)
                         {
+                            Log.Trace($"PubSubDataQueueHandler: Successfully pulled {messages.Count} message(s)");
                             return messages.ToObject<List<Dictionary<string, object>>>();
                         }
+                        else
+                        {
+                            // No messages available - this is normal, not an error
+                            return new List<Dictionary<string, object>>();
+                        }
+                    }
+                    else
+                    {
+                        // No receivedMessages key - might be empty response
+                        return new List<Dictionary<string, object>>();
                     }
                 }
                 else
@@ -804,11 +903,40 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 DateTime timestamp;
                 try
                 {
-                    timestamp = DateTime.Parse(data.Timestamp);
-                    if (data.Timestamp.EndsWith("Z"))
+                    // Parse timestamp with proper timezone handling
+                    // Supports formats like: "2026-01-02T23:12:00+00:00", "2026-01-02T23:12:00Z", "2026-01-02T23:12:00"
+                    if (DateTime.TryParse(data.Timestamp, null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                    {
+                        timestamp = parsed;
+                    }
+                    else
+                    {
+                        // Fallback to simple parse
+                        timestamp = DateTime.Parse(data.Timestamp);
+                    }
+                    
+                    // Ensure timestamp is in UTC
+                    if (timestamp.Kind == DateTimeKind.Unspecified)
+                    {
+                        // If timezone info is missing, assume UTC (common for ISO 8601 with Z or +00:00)
+                        if (data.Timestamp.EndsWith("Z") || data.Timestamp.Contains("+00:00") || data.Timestamp.Contains("-00:00"))
+                        {
+                            timestamp = DateTime.SpecifyKind(timestamp, DateTimeKind.Utc);
+                        }
+                        else
+                        {
+                            // Assume UTC if no timezone specified
+                            timestamp = DateTime.SpecifyKind(timestamp, DateTimeKind.Utc);
+                        }
+                    }
+                    
+                    // Convert to UTC if not already
+                    if (timestamp.Kind != DateTimeKind.Utc)
                     {
                         timestamp = timestamp.ToUniversalTime();
                     }
+                    
+                    Log.Trace($"PubSubDataQueueHandler: Parsed timestamp '{data.Timestamp}' -> {timestamp:yyyy-MM-dd HH:mm:ss} UTC (Kind: {timestamp.Kind})");
                 }
                 catch (Exception ex)
                 {
@@ -816,18 +944,50 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     return null;
                 }
 
-                // Ensure timestamp is in UTC and not too far in the future
-                if (timestamp.Kind != DateTimeKind.Utc)
+                // In live mode, LEAN's algorithm clock starts at the current time when the algorithm begins
+                // We use the timestamp from the message, but ensure it's slightly in the past (100ms buffer)
+                // This ensures LEAN can process the data immediately without filtering it out
+                // LEAN filters duplicate timestamps, so we increment by small amounts if needed
+                var now = DateTime.UtcNow;
+                
+                // Ensure timestamp is at least 100ms in the past relative to now
+                // This gives LEAN a small buffer to process the data
+                var minPastTimestamp = now.AddMilliseconds(-100);
+                
+                // If the message timestamp is in the future or too close to now, adjust it
+                if (timestamp >= minPastTimestamp)
                 {
-                    timestamp = timestamp.ToUniversalTime();
+                    timestamp = minPastTimestamp;
                 }
                 
-                // In live mode, LEAN expects data to be at or slightly before current time
-                var now = DateTime.UtcNow;
-                if (timestamp > now.AddMinutes(5))
+                // Ensure timestamps are monotonically increasing (LEAN filters duplicates)
+                // Use small increments (100ms) to ensure uniqueness while staying in the past
+                lock (_lock)
                 {
-                    Log.Trace($"PubSubDataQueueHandler: Data timestamp {timestamp} is too far in future (now={now}), adjusting to current time");
-                    timestamp = now;
+                    if (_lastTimestamp != null)
+                    {
+                        if (timestamp <= _lastTimestamp.Value)
+                        {
+                            // Increment from last timestamp by 100ms
+                            timestamp = _lastTimestamp.Value.AddMilliseconds(100);
+                        }
+                        
+                        // Ensure we never go into the future (keep at least 100ms in the past)
+                        if (timestamp >= minPastTimestamp)
+                        {
+                            timestamp = minPastTimestamp;
+                        }
+                    }
+                    _lastTimestamp = timestamp;
+                }
+                
+                var timeDiff = (now - timestamp).TotalMilliseconds;
+                Log.Trace($"PubSubDataQueueHandler: Using timestamp {timestamp:yyyy-MM-dd HH:mm:ss.fff} UTC (now: {now:yyyy-MM-dd HH:mm:ss.fff} UTC, {timeDiff:F0}ms in past)");
+                
+                // Warn if timestamp is more than 5 seconds in the past - LEAN might filter it
+                if (timeDiff > 5000)
+                {
+                    Log.Error($"PubSubDataQueueHandler: WARNING - Data timestamp is {timeDiff/1000:F1} seconds in the past - LEAN may filter this data if it's too old relative to algorithm clock");
                 }
 
                 // Create appropriate data type based on config.Type
@@ -864,6 +1024,50 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             }
         }
 
+        /// <summary>
+        /// Wrapper enumerator that logs when MoveNext() is called
+        /// This helps debug if LEAN is actually calling MoveNext() on the enumerator
+        /// </summary>
+        private class LoggingEnumerator : IEnumerator<BaseData>
+        {
+            private readonly EnqueueableEnumerator<BaseData> _enumerator;
+            private readonly Symbol _symbol;
+            private int _moveNextCount = 0;
+            
+            public LoggingEnumerator(EnqueueableEnumerator<BaseData> enumerator, Symbol symbol)
+            {
+                _enumerator = enumerator;
+                _symbol = symbol;
+            }
+            
+            public BaseData Current => _enumerator.Current;
+            
+            object IEnumerator.Current => Current;
+            
+            public bool MoveNext()
+            {
+                _moveNextCount++;
+                var queueSizeBefore = _enumerator.Count;
+                var result = _enumerator.MoveNext();
+                var queueSizeAfter = _enumerator.Count;
+                var currentData = Current;
+                var currentTime = currentData?.Time ?? (DateTime?)null;
+                var currentSymbol = currentData?.Symbol?.Value ?? "null";
+                Log.Trace($"PubSubDataQueueHandler: MoveNext() called #{_moveNextCount} for {_symbol} - returned {result}, queue: {queueSizeBefore} -> {queueSizeAfter}, Current: {currentTime} (Symbol: {currentSymbol}, Type: {currentData?.GetType().Name ?? "null"})");
+                return result;
+            }
+            
+            public void Reset()
+            {
+                _enumerator.Reset();
+            }
+            
+            public void Dispose()
+            {
+                _enumerator.Dispose();
+            }
+        }
+        
         private class ServiceAccountCredentialData
         {
             [JsonProperty("type")]

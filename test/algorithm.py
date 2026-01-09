@@ -12,8 +12,12 @@ class PubSubTestAlgorithm(QCAlgorithm):
     
     def Initialize(self):
         """Initialize the algorithm."""
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 12, 31)
+        # In live mode, don't set dates - LEAN uses current time
+        # Setting dates can cause the algorithm clock to start in the past,
+        # making data timestamps appear in the future
+        if not self.LiveMode:
+            self.SetStartDate(2024, 1, 1)
+            self.SetEndDate(2024, 12, 31)
         self.SetCash(100000)
         
         # Get symbol from environment variable (default: BTC-USD)

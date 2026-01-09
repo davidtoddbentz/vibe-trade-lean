@@ -9,19 +9,48 @@ TOPIC_NAME="vibe-trade-candles-btc-usd-1m"
 SUBSCRIPTION_NAME="test_local"
 
 echo "Waiting for emulator to be ready..."
-sleep 5
+# Wait for emulator to be ready (check if it responds)
+i=0
+while [ $i -lt 30 ]; do
+  if curl -s "http://${EMULATOR_HOST}" > /dev/null 2>&1; then
+    echo "  ✅ Emulator is ready"
+    break
+  fi
+  i=$((i + 1))
+  if [ $i -eq 30 ]; then
+    echo "  ❌ Emulator did not become ready after 30 attempts"
+    exit 1
+  fi
+  sleep 1
+done
 
 # Create topic
 echo "Creating topic: $TOPIC_NAME"
-curl -s -X PUT "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/${TOPIC_NAME}" \
+RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/topics/${TOPIC_NAME}" \
   -H "Content-Type: application/json" \
-  -d '{}' > /dev/null || echo "Topic may already exist"
+  -d '{}')
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "409" ]; then
+  echo "  ✅ Topic created/exists (HTTP $HTTP_CODE)"
+else
+  echo "  ❌ Failed to create topic (HTTP $HTTP_CODE)"
+  echo "     Response: $(echo "$RESPONSE" | head -n -1)"
+  exit 1
+fi
 
 # Create subscription
 echo "Creating subscription: $SUBSCRIPTION_NAME"
-curl -s -X PUT "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/${SUBSCRIPTION_NAME}" \
+RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "http://${EMULATOR_HOST}/v1/projects/${PROJECT_ID}/subscriptions/${SUBSCRIPTION_NAME}" \
   -H "Content-Type: application/json" \
-  -d "{\"topic\": \"projects/${PROJECT_ID}/topics/${TOPIC_NAME}\"}" > /dev/null || echo "Subscription may already exist"
+  -d "{\"topic\": \"projects/${PROJECT_ID}/topics/${TOPIC_NAME}\"}")
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "409" ]; then
+  echo "  ✅ Subscription created/exists (HTTP $HTTP_CODE)"
+else
+  echo "  ❌ Failed to create subscription (HTTP $HTTP_CODE)"
+  echo "     Response: $(echo "$RESPONSE" | head -n -1)"
+  exit 1
+fi
 
 # Publish test messages
 echo "Publishing test messages..."

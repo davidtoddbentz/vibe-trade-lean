@@ -39,6 +39,6 @@ while true; do
   fi
   
   i=$((i + 1))
-  sleep 1
+  sleep 0.1  # Send 10 messages per second for faster testing
 done
 
