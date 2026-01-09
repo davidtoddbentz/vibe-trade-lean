@@ -1,0 +1,57 @@
+# HTTP Backtest Service - extends base LEAN image with FastAPI
+FROM quantconnect/lean:latest
+
+# Set environment variables
+ENV DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER=1
+ENV DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT=1
+
+# Install Python dependencies including FastAPI/uvicorn for HTTP service
+RUN (python3 -m pip install --no-cache-dir \
+        'google-cloud-pubsub>=2.18.0' \
+        'google-cloud-storage>=2.14.0' \
+        'pyarrow>=14.0.0' \
+        'fastavro>=1.9.0' \
+        'pydantic>=2.0.0' \
+        'fastapi>=0.109.0' \
+        'uvicorn>=0.27.0' 2>/dev/null || \
+     python -m pip install --no-cache-dir \
+        'google-cloud-pubsub>=2.18.0' \
+        'google-cloud-storage>=2.14.0' \
+        'pyarrow>=14.0.0' \
+        'fastavro>=1.9.0' \
+        'pydantic>=2.0.0' \
+        'fastapi>=0.109.0' \
+        'uvicorn>=0.27.0' 2>/dev/null || \
+     pip install --no-cache-dir \
+        'google-cloud-pubsub>=2.18.0' \
+        'google-cloud-storage>=2.14.0' \
+        'pyarrow>=14.0.0' \
+        'fastavro>=1.9.0' \
+        'pydantic>=2.0.0' \
+        'fastapi>=0.109.0' \
+        'uvicorn>=0.27.0' 2>/dev/null) && \
+    echo "✅ Python dependencies installed"
+
+# Create directories
+RUN mkdir -p /Lean/src
+
+# Copy Python modules
+COPY src/data/ /Lean/src/data/
+COPY src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/
+COPY src/serve_backtest.py /Lean/
+
+# Create __init__.py for src module
+RUN touch /Lean/src/__init__.py
+
+# Copy LEAN data files (symbol properties, market hours)
+COPY data/ /Lean/Data/
+
+# Set PYTHONPATH for imports
+ENV PYTHONPATH="/Lean:${PYTHONPATH}"
+
+# Expose port for HTTP service
+EXPOSE 8080
+
+# Run FastAPI backtest service
+WORKDIR /Lean
+CMD ["/opt/miniconda3/bin/python3", "/Lean/serve_backtest.py"]
