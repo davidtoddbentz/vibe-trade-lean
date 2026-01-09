@@ -1,25 +1,77 @@
-.PHONY: build test test-local test-integration clean help
+.PHONY: build build-service push-service deploy-service deploy test test-local test-integration clean help
 
+# Local build
 FULL_IMAGE=vibe-trade-lean:latest
 TEST_SYMBOL?=BTC-USD
 
+# Cloud deployment
+PROJECT_ID ?= vibe-trade-475704
+REGION ?= us-central1
+BACKTEST_SERVICE_IMAGE ?= $(REGION)-docker.pkg.dev/$(PROJECT_ID)/vibe-trade-lean/vibe-trade-backtest:latest
+
 help:
 	@echo "Available targets:"
-	@echo "  build           - Build the Docker image"
-	@echo "  test            - Run full integration test with production Pub/Sub (requires credentials)"
-	@echo "  test-local      - Run basic test with local Pub/Sub emulator (no credentials needed)"
-	@echo "  test-integration - Run full integration test with deterministic trading strategy"
+	@echo "  build           - Build the base LEAN Docker image (local)"
+	@echo "  build-service   - Build the backtest service image for Cloud Run"
+	@echo "  deploy          - Build, push, and deploy backtest service to Cloud Run"
+	@echo "  test            - Run full integration test with production Pub/Sub"
+	@echo "  test-local      - Run basic test with local Pub/Sub emulator"
+	@echo "  test-integration - Run full integration test with deterministic trading"
 	@echo "  clean           - Clean up build artifacts and containers"
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  TEST_SYMBOL     - Symbol to test (default: BTC-USD)"
-	@echo "  GOOGLE_CLOUD_PROJECT - GCP project ID (required for 'test')"
-	@echo "  GOOGLE_APPLICATION_CREDENTIALS - Path to service account key (required for 'test')"
+	@echo "  PROJECT_ID      - GCP project ID (default: vibe-trade-475704)"
+	@echo "  REGION          - Cloud Run region (default: us-central1)"
+
+# =============================================================================
+# Build & Deploy
+# =============================================================================
 
 build:
 	@echo "🔨 Building vibe-trade-lean:latest..."
 	docker build -t $(FULL_IMAGE) .
 	@echo "✅ Build complete: $(FULL_IMAGE)"
+
+build-service:
+	@echo "🏗️  Building backtest service image..."
+	@echo "   Image: $(BACKTEST_SERVICE_IMAGE)"
+	DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		-f Dockerfile.service \
+		-t $(BACKTEST_SERVICE_IMAGE) \
+		.
+	@echo "✅ Build complete"
+
+push-service:
+	@echo "📤 Pushing backtest service image..."
+	docker push $(BACKTEST_SERVICE_IMAGE)
+	@echo "✅ Push complete"
+
+deploy-service:
+	@echo "🚀 Deploying backtest service to Cloud Run..."
+	gcloud run deploy vibe-trade-backtest \
+		--image=$(BACKTEST_SERVICE_IMAGE) \
+		--region=$(REGION) \
+		--project=$(PROJECT_ID) \
+		--platform=managed \
+		--concurrency=1 \
+		--min-instances=1 \
+		--max-instances=10 \
+		--cpu-throttling \
+		--memory=4Gi \
+		--cpu=2 \
+		--timeout=3600 \
+		--no-allow-unauthenticated \
+		--service-account=vibe-trade-lean-job-runner@$(PROJECT_ID).iam.gserviceaccount.com
+	@echo "✅ Deploy complete"
+
+deploy: build-service push-service deploy-service
+	@echo ""
+	@echo "✅ Backtest service deployed!"
+
+# =============================================================================
+# Testing
+# =============================================================================
 
 test: build
 	@if [ -z "$$GOOGLE_CLOUD_PROJECT" ]; then \
