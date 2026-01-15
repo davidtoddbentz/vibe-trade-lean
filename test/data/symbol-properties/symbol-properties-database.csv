@@ -1,3 +1,4 @@
-market,symbol-type,description,quote-currency,contract-multiplier,pip-size,lot-size
-gdax,crypto,BTCUSD,BTC,1,0.01,1
-coinbase,crypto,BTCUSD,BTC,1,0.01,1
+market,symbol,security-type,description,quote-currency,contract-multiplier,minimum-price-variation,lot-size
+coinbase,BTCUSD,Crypto,Bitcoin,USD,1,0.01,0.00000001
+gdax,BTCUSD,Crypto,Bitcoin,USD,1,0.01,0.00000001
+coinbase,TESTUSD,Crypto,Test Token,USD,1,0.01,0.00000001

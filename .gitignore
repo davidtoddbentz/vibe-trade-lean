@@ -27,9 +27,14 @@ Thumbs.db
 *.tar
 *.tar.gz
 
+# Packages copied for Docker build (created by make prepare-packages)
+packages/*
+!packages/.gitkeep
+
 # Credentials (NEVER commit these)
 *.json
 !test/config.json
+!test/config-backtest.json
 !test/data/**/*.json
 !test/data/**/*.csv
 credentials.json
@@ -42,3 +47,4 @@ lean-pubsub-key.json
 *.orig
 test-assembly-load.cs
 test-debug.sh
+test/lib/__pycache__/*

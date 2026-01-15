@@ -6,12 +6,36 @@ FROM quantconnect/lean:latest
 ENV DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER=1
 ENV DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT=1
 
-# Install Python dependencies for Pub/Sub (for Python algorithms)
-RUN (python3 -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
-     python -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
-     pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
-     /usr/bin/python3 -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null) && \
-    echo "✅ Pub/Sub Python library installed"
+# Install Python dependencies for Pub/Sub and BigQuery data loading
+RUN (python3 -m pip install --no-cache-dir \
+        google-cloud-pubsub>=2.18.0 \
+        google-cloud-bigquery>=3.0.0 \
+        2>/dev/null || \
+     python -m pip install --no-cache-dir \
+        google-cloud-pubsub>=2.18.0 \
+        google-cloud-bigquery>=3.0.0 \
+        2>/dev/null || \
+     pip install --no-cache-dir \
+        google-cloud-pubsub>=2.18.0 \
+        google-cloud-bigquery>=3.0.0 \
+        2>/dev/null || \
+     /usr/bin/python3 -m pip install --no-cache-dir \
+        google-cloud-pubsub>=2.18.0 \
+        google-cloud-bigquery>=3.0.0 \
+        2>/dev/null) && \
+    echo "✅ Python libraries installed (Pub/Sub, BigQuery)"
+
+# Copy vibe-trade packages for strategy execution (optional)
+# Note: The inline evaluator in strategy_runtime.py handles all IR evaluation,
+# so package installation is not required for the runtime to work.
+COPY packages/ /packages/
+RUN if [ -d /packages/vibe-trade-shared ] && [ -f /packages/vibe-trade-shared/pyproject.toml ]; then \
+        echo "📦 Installing vibe-trade-shared..."; \
+        (python3 -m pip install --no-cache-dir --no-deps /packages/vibe-trade-shared 2>/dev/null || true) && \
+        echo "✅ vibe-trade-shared installed (no-deps)"; \
+    else \
+        echo "ℹ️  vibe-trade packages not found - using inline evaluator"; \
+    fi
 
 # Create directory for C# handler compilation
 RUN mkdir -p /Lean/CustomDataQueueHandler
@@ -70,6 +94,14 @@ RUN if [ -f /Lean/Launcher/bin/Debug/PubSubDataQueueHandler.dll ]; then \
         exit 1; \
     fi
 
-# Note: We preserve the base image's entrypoint and working directory
-# The base image uses /Lean/Launcher/bin/Debug as working directory
+# Copy scripts for data loading
+COPY scripts/ /scripts/
+RUN chmod +x /scripts/*.sh /scripts/*.py
+
+# Create Data directory
+RUN mkdir -p /Data
+
+# Set custom entrypoint that handles data loading before LEAN runs
+ENTRYPOINT ["/scripts/entrypoint.sh"]
+CMD ["--config", "/Lean/Launcher/bin/Debug/config.json"]
 

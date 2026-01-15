@@ -1,4 +1,4 @@
-.PHONY: build test test-local clean help
+.PHONY: build test test-local test-backtest test-synthetic clean help prepare-packages
 
 IMAGE_NAME ?= vibe-trade-lean
 IMAGE_TAG ?= latest
@@ -8,10 +8,12 @@ TEST_SYMBOL ?= BTC-USD
 
 help:
 	@echo "Available targets:"
-	@echo "  build           - Build the custom LEAN Docker image"
+	@echo "  build           - Build the custom LEAN Docker image (includes vibe-trade packages)"
+	@echo "  test-synthetic  - Run end-to-end test with synthetic data (recommended)"
+	@echo "  test-backtest   - Run backtest with custom strategy IR"
 	@echo "  test-local      - Run test with local Pub/Sub emulator (no credentials needed)"
 	@echo "  test            - Run integration test with production Pub/Sub (requires GCP credentials)"
-	@echo "  clean           - Remove built image"
+	@echo "  clean           - Remove built image and temporary files"
 	@echo ""
 	@echo "Environment variables (for test):"
 	@echo "  GOOGLE_CLOUD_PROJECT          - GCP project ID (required for test)"
@@ -19,10 +21,33 @@ help:
 	@echo "  PUBSUB_TEST_SYMBOL            - Symbol to test (default: BTC-USD)"
 	@echo "  PUBSUB_TEST_SUBSCRIPTION      - Subscription name (default: test_local)"
 	@echo "  TEST_TIMEOUT                  - Test timeout in seconds (default: 60)"
+	@echo "  STRATEGY_IR_PATH              - Path to strategy IR JSON for backtest"
 
-build:
+prepare-packages:
+	@echo "📦 Preparing vibe-trade packages..."
+	@mkdir -p packages
+	@if [ -d "../vibe-trade-shared" ]; then \
+		mkdir -p packages/vibe-trade-shared && \
+		cp ../vibe-trade-shared/pyproject.toml packages/vibe-trade-shared/ && \
+		cp -r ../vibe-trade-shared/src packages/vibe-trade-shared/ && \
+		echo "  ✅ vibe-trade-shared copied (src only)"; \
+	else \
+		echo "  ⚠️  vibe-trade-shared not found - skipping"; \
+	fi
+	@if [ -d "../vibe-trade-execution" ]; then \
+		mkdir -p packages/vibe-trade-execution && \
+		cp ../vibe-trade-execution/pyproject.toml packages/vibe-trade-execution/ && \
+		cp -r ../vibe-trade-execution/src packages/vibe-trade-execution/ && \
+		echo "  ✅ vibe-trade-execution copied (src only)"; \
+	else \
+		echo "  ⚠️  vibe-trade-execution not found - skipping"; \
+	fi
+
+build: prepare-packages
 	@echo "🔨 Building $(FULL_IMAGE)..."
-	docker build -t $(FULL_IMAGE) .
+	docker build --no-cache -t $(FULL_IMAGE) .
+	@echo "🧹 Cleaning up packages..."
+	@rm -rf packages
 	@echo "✅ Build complete: $(FULL_IMAGE)"
 
 test: build
@@ -138,9 +163,95 @@ test-local: build
 	echo "Log file: $$LOG_FILE"; \
 	echo "Results: test/results/"
 
+test-backtest: build
+	@echo "🧪 Running backtest with StrategyRuntime"
+	@echo ""
+	@if [ -z "$(STRATEGY_IR_PATH)" ]; then \
+		echo "ℹ️  Using default test strategy (no STRATEGY_IR_PATH set)"; \
+	fi
+	@mkdir -p test/results test/data/crypto/coinbase/minute
+	@LOG_FILE="/tmp/lean-backtest-$$(date +%Y%m%d-%H%M%S).log"; \
+	echo "🚀 Running backtest (logs: $$LOG_FILE)"; \
+	docker run --rm \
+		-e STRATEGY_IR_PATH="$(or $(STRATEGY_IR_PATH),/Data/strategy_ir.json)" \
+		-v "$(PWD)/test/data:/Data:ro" \
+		-v "$(PWD)/test/results:/Results" \
+		-v "$(PWD)/src/strategy_runtime.py:/Lean/Algorithm.Python/strategy_runtime.py:ro" \
+		-v "$(PWD)/test/config-backtest.json:/Lean/Launcher/bin/Debug/config.json:ro" \
+		$(FULL_IMAGE) \
+		--config /Lean/Launcher/bin/Debug/config.json 2>&1 | tee $$LOG_FILE || true; \
+	echo ""; \
+	echo "📊 Backtest Results:"; \
+	if grep -q "ENTRY executed" $$LOG_FILE 2>/dev/null; then \
+		echo "  ✅ Entry signals detected"; \
+	else \
+		echo "  ❌ No entry signals"; \
+	fi; \
+	if grep -q "EXIT" $$LOG_FILE 2>/dev/null; then \
+		echo "  ✅ Exit signals detected"; \
+	else \
+		echo "  ❌ No exit signals"; \
+	fi; \
+	echo ""; \
+	echo "Log file: $$LOG_FILE"; \
+	echo "Results: test/results/"
+
+test-synthetic: build
+	@echo "🧪 Running end-to-end test with synthetic data"
+	@echo ""
+	@echo "📊 Generating synthetic data..."
+	@python3 test/generate_synthetic_data.py --output test/data --scenario trend_pullback --symbol TESTUSD --start-date 2024-01-01
+	@echo ""
+	@mkdir -p test/results
+	@LOG_FILE="/tmp/lean-synthetic-$$(date +%Y%m%d-%H%M%S).log"; \
+	echo "🚀 Running LEAN backtest (logs: $$LOG_FILE)"; \
+	docker run --rm \
+		-e STRATEGY_IR_PATH="/Data/strategy_ir.json" \
+		-e START_DATE="2024-01-01" \
+		-e END_DATE="2024-01-01" \
+		-e SKIP_DATA_DOWNLOAD="1" \
+		-e USE_CUSTOM_DATA_MODE="true" \
+		-v "$(PWD)/test/data:/Data:ro" \
+		-v "$(PWD)/test/data/custom:/Data/custom:ro" \
+		-v "$(PWD)/test/results:/Results" \
+		-v "$(PWD)/src/strategy_runtime.py:/Lean/Algorithm.Python/strategy_runtime.py:ro" \
+		-v "$(PWD)/test/config-backtest.json:/Lean/Launcher/bin/Debug/config.json:ro" \
+		$(FULL_IMAGE) \
+		--config /Lean/Launcher/bin/Debug/config.json 2>&1 | tee $$LOG_FILE || true; \
+	echo ""; \
+	echo "📊 End-to-End Test Results:"; \
+	echo ""; \
+	echo "Strategy Execution:"; \
+	if grep -q "Loaded strategy" $$LOG_FILE 2>/dev/null; then \
+		echo "  ✅ Strategy loaded successfully"; \
+	else \
+		echo "  ❌ Strategy failed to load"; \
+	fi; \
+	if grep -q "indicators" $$LOG_FILE 2>/dev/null; then \
+		echo "  ✅ Indicators initialized"; \
+	else \
+		echo "  ❌ Indicator initialization failed"; \
+	fi; \
+	echo ""; \
+	echo "Trading Signals:"; \
+	ENTRY_COUNT=$$(grep -c "ENTRY executed" $$LOG_FILE 2>/dev/null || echo 0); \
+	EXIT_COUNT=$$(grep -c "EXIT" $$LOG_FILE 2>/dev/null || echo 0); \
+	echo "  Entries: $$ENTRY_COUNT"; \
+	echo "  Exits: $$EXIT_COUNT"; \
+	echo ""; \
+	if [ "$$ENTRY_COUNT" -gt 0 ]; then \
+		echo "✅ TEST PASSED: Strategy generated entry signals"; \
+	else \
+		echo "❌ TEST FAILED: No entry signals generated"; \
+	fi; \
+	echo ""; \
+	echo "Log file: $$LOG_FILE"; \
+	echo "Results: test/results/"
+
 clean:
 	@echo "🧹 Removing image $(FULL_IMAGE)..."
 	@docker rmi $(FULL_IMAGE) 2>/dev/null || echo "Image not found"
 	@docker-compose -f docker-compose.test.yml down 2>/dev/null || true
+	@rm -rf packages
 	@echo "✅ Clean complete"
 

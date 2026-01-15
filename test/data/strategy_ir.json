@@ -1,0 +1,100 @@
+{
+  "strategy_id": "test-trend-pullback-001",
+  "strategy_name": "TestTrendPullback",
+  "symbol": "TESTUSD",
+  "resolution": "Minute",
+  "indicators": [
+    {"type": "EMA", "id": "ema_20", "period": 20},
+    {"type": "EMA", "id": "ema_50", "period": 50},
+    {"type": "BB", "id": "bb_20", "period": 20, "multiplier": 2.0}
+  ],
+  "state": [
+    {"id": "bars_since_entry", "var_type": "int", "default": 0},
+    {"id": "entry_price", "var_type": "float", "default": 0.0}
+  ],
+  "gates": [],
+  "overlays": [],
+  "entry": {
+    "condition": {
+      "type": "allOf",
+      "conditions": [
+        {
+          "type": "compare",
+          "left": {"type": "indicator", "indicator_id": "ema_20"},
+          "op": ">",
+          "right": {"type": "indicator", "indicator_id": "ema_50"}
+        },
+        {
+          "type": "compare",
+          "left": {"type": "price", "field": "close"},
+          "op": "<=",
+          "right": {"type": "indicator_band", "indicator_id": "bb_20", "band": "lower"}
+        }
+      ]
+    },
+    "action": {"type": "set_holdings", "allocation": 0.95},
+    "on_fill": [
+      {"type": "set_state", "state_id": "bars_since_entry", "value": {"type": "literal", "value": 0}},
+      {"type": "set_state", "state_id": "entry_price", "value": {"type": "price", "field": "close"}}
+    ]
+  },
+  "exits": [
+    {
+      "id": "profit_target",
+      "priority": 2,
+      "condition": {
+        "type": "compare",
+        "left": {
+          "type": "expr",
+          "op": "/",
+          "left": {
+            "type": "expr",
+            "op": "-",
+            "left": {"type": "price", "field": "close"},
+            "right": {"type": "state", "state_id": "entry_price"}
+          },
+          "right": {"type": "state", "state_id": "entry_price"}
+        },
+        "op": ">=",
+        "right": {"type": "literal", "value": 0.02}
+      },
+      "action": {"type": "liquidate"}
+    },
+    {
+      "id": "stop_loss",
+      "priority": 1,
+      "condition": {
+        "type": "compare",
+        "left": {
+          "type": "expr",
+          "op": "/",
+          "left": {
+            "type": "expr",
+            "op": "-",
+            "left": {"type": "state", "state_id": "entry_price"},
+            "right": {"type": "price", "field": "close"}
+          },
+          "right": {"type": "state", "state_id": "entry_price"}
+        },
+        "op": ">=",
+        "right": {"type": "literal", "value": 0.01}
+      },
+      "action": {"type": "liquidate"}
+    },
+    {
+      "id": "timeout",
+      "priority": 0,
+      "condition": {
+        "type": "compare",
+        "left": {"type": "state", "state_id": "bars_since_entry"},
+        "op": ">",
+        "right": {"type": "literal", "value": 100}
+      },
+      "action": {"type": "liquidate"}
+    }
+  ],
+  "on_bar": [],
+  "on_bar_invested": [
+    {"type": "increment", "state_id": "bars_since_entry"}
+  ]
+}
