@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
-from google.cloud import storage
 from pydantic import BaseModel, Field
 
 logging.basicConfig(
@@ -27,11 +26,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Vibe Trade Backtest Service")
-
-# Configuration from environment
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "vibe-trade-475704")
-RESULTS_BUCKET = os.environ.get("RESULTS_BUCKET", "vibe-trade-backtest-results")
-DATA_BUCKET = os.environ.get("DATA_BUCKET", "batch-save")
 
 
 def generate_backtest_id() -> str:
@@ -90,19 +84,6 @@ class LEANBacktestRequest(BaseModel):
     skip_gcs_upload: bool = False
 
 
-# Legacy format for backward compatibility
-class BacktestRequest(BaseModel):
-    """Legacy request format (for direct calls)."""
-    strategy_id: str
-    strategy_ir: dict[str, Any]
-    symbol: str = "BTC-USD"
-    start_date: str  # YYYYMMDD
-    end_date: str  # YYYYMMDD
-    initial_cash: float = 100000.0
-    market_data: list[dict] | None = None  # List of OHLCVBar dicts
-    skip_gcs_upload: bool = False
-
-
 # =============================================================================
 # Response Models
 # =============================================================================
@@ -141,30 +122,6 @@ class LEANBacktestResponse(BaseModel):
     summary: LEANBacktestSummary | None = None
     equity_curve: list[float] | None = None
     error: str | None = None
-
-
-# Legacy response format
-class BacktestSummary(BaseModel):
-    """Legacy summary statistics."""
-    final_equity: float
-    total_return_pct: float
-    max_drawdown_pct: float
-    total_trades: int
-    win_rate: float
-    profit_factor: float
-
-
-class BacktestResponse(BaseModel):
-    """Legacy response format."""
-    backtest_id: str
-    strategy_id: str
-    status: str
-    created_at: str
-    results_path: str | None = None
-    summary: BacktestSummary | None = None
-    error: str | None = None
-    duration_seconds: float | None = None
-    strategy_output: dict[str, Any] | None = None
 
 
 # =============================================================================
@@ -340,187 +297,6 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         )
 
 
-async def _run_backtest_internal(
-    request: BacktestRequest,
-    backtest_id: str,
-    created_at: datetime,
-) -> BacktestResponse:
-    """Internal backtest execution (legacy format)."""
-    storage_client = None if request.skip_gcs_upload else storage.Client()
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-
-        # Setup directories
-        data_dir = temp_path / "Data"
-        algo_dir = temp_path / "Algorithms"
-        results_dir = temp_path / "Results"
-
-        data_dir.mkdir()
-        algo_dir.mkdir()
-        results_dir.mkdir()
-
-        # Write strategy IR to file
-        ir_path = data_dir / "strategy_ir.json"
-        with open(ir_path, "w") as f:
-            json.dump(request.strategy_ir, f, indent=2)
-
-        # Fetch or use inline market data
-        if request.market_data:
-            # Use inline market data (for testing)
-            candle_count = _write_inline_market_data(
-                request.market_data, request.symbol, data_dir
-            )
-            logger.info(f"Using {candle_count} inline market data bars")
-        else:
-            # Fetch from GCS
-            start_date = datetime.strptime(request.start_date, "%Y%m%d")
-            end_date = datetime.strptime(request.end_date, "%Y%m%d")
-
-            candle_count = _fetch_market_data(
-                DATA_BUCKET, request.symbol, start_date, end_date, data_dir
-            )
-
-        if candle_count == 0:
-            return BacktestResponse(
-                backtest_id=backtest_id,
-                strategy_id=request.strategy_id,
-                status="error",
-                created_at=created_at.isoformat(),
-                error=f"No market data found for {request.symbol}",
-            )
-
-        # Copy LEAN data files
-        _copy_lean_data_files(data_dir)
-
-        # Copy StrategyRuntime
-        runtime_src = Path("/Lean/Algorithm.Python/StrategyRuntime.py")
-        if not runtime_src.exists():
-            runtime_src = Path(__file__).parent / "Algorithms" / "StrategyRuntime.py"
-        shutil.copy(runtime_src, algo_dir / "StrategyRuntime.py")
-
-        # Run LEAN
-        lean_result = _run_lean(
-            algo_dir=algo_dir,
-            data_dir=data_dir,
-            results_dir=results_dir,
-            ir_path=str(ir_path),
-            start_date=request.start_date,
-            end_date=request.end_date,
-            initial_cash=request.initial_cash,
-        )
-
-        # Capture strategy output
-        strategy_output = None
-        strategy_output_path = data_dir / "strategy_output.json"
-        if strategy_output_path.exists():
-            with open(strategy_output_path, "r") as f:
-                strategy_output = json.load(f)
-
-        # Build summary from strategy output
-        summary = None
-        if strategy_output:
-            stats = strategy_output.get("statistics", {})
-            initial_cash = strategy_output.get("initial_cash", request.initial_cash)
-            final_equity = strategy_output.get("final_equity", initial_cash)
-            total_return = ((final_equity - initial_cash) / initial_cash) * 100 if initial_cash else 0
-
-            summary = BacktestSummary(
-                final_equity=final_equity,
-                total_return_pct=round(total_return, 2),
-                max_drawdown_pct=round(strategy_output.get("max_drawdown_pct", 0), 2),
-                total_trades=stats.get("total_trades", 0),
-                win_rate=round(stats.get("win_rate", 0), 1),
-                profit_factor=round(stats.get("profit_factor", 0), 2),
-            )
-
-        # GCS path organized by strategy_id
-        gcs_folder = f"backtests/{request.strategy_id}/{backtest_id}"
-        results_gcs_path: str | None = None
-
-        # Full result for GCS storage
-        full_result = {
-            "backtest_id": backtest_id,
-            "strategy_id": request.strategy_id,
-            "created_at": created_at.isoformat(),
-            "symbol": request.symbol,
-            "start_date": request.start_date,
-            "end_date": request.end_date,
-            "initial_cash": request.initial_cash,
-            "candle_count": candle_count,
-            "status": lean_result.get("status", "unknown"),
-            "strategy_output": strategy_output,
-        }
-
-        # Upload to GCS unless skip_gcs_upload is set
-        if storage_client and not request.skip_gcs_upload:
-            bucket = storage_client.bucket(RESULTS_BUCKET)
-
-            # Upload results.json
-            blob = bucket.blob(f"{gcs_folder}/results.json")
-            blob.upload_from_string(json.dumps(full_result, indent=2))
-
-            # Also upload strategy_ir.json for reference
-            ir_blob = bucket.blob(f"{gcs_folder}/strategy_ir.json")
-            ir_blob.upload_from_string(json.dumps(request.strategy_ir, indent=2))
-
-            results_gcs_path = f"gs://{RESULTS_BUCKET}/{gcs_folder}/"
-
-        return BacktestResponse(
-            backtest_id=backtest_id,
-            strategy_id=request.strategy_id,
-            status=lean_result.get("status", "unknown"),
-            created_at=created_at.isoformat(),
-            results_path=results_gcs_path,
-            summary=summary,
-            error=lean_result.get("stderr") if lean_result.get("status") == "error" else None,
-            # Include full strategy output for test inspection when not uploading to GCS
-            strategy_output=strategy_output if request.skip_gcs_upload else None,
-        )
-
-
-def _write_inline_market_data(
-    bars: list[OHLCVBar],
-    symbol: str,
-    output_dir: Path,
-) -> int:
-    """Write inline market data to LEAN format.
-
-    Args:
-        bars: List of OHLCV bars from request
-        symbol: Trading symbol
-        output_dir: Data output directory
-
-    Returns:
-        Number of bars written
-    """
-    from src.data import LeanDataExporter
-    from src.data.models import Candle
-
-    # Convert OHLCVBar to Candle objects
-    candles = [
-        Candle(
-            symbol=symbol,
-            timestamp=datetime.fromisoformat(bar.timestamp.replace("Z", "+00:00")),
-            open=bar.open,
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-            volume=bar.volume,
-            resolution="1m",
-        )
-        for bar in bars
-    ]
-
-    if not candles:
-        return 0
-
-    exporter = LeanDataExporter(output_dir)
-    exporter.export_candles(candles, symbol)
-
-    return len(candles)
-
-
 def _write_ohlcv_bars_to_csv(
     bars: list[OHLCVBar],
     symbol: str,
@@ -566,31 +342,6 @@ def _write_ohlcv_bars_to_csv(
 
     logger.info(f"Wrote {len(bars)} bars to {file_path}")
     return len(bars)
-
-
-def _fetch_market_data(
-    bucket: str,
-    symbol: str,
-    start_date: datetime,
-    end_date: datetime,
-    output_dir: Path,
-) -> int:
-    """Fetch market data from GCS."""
-    # Import here to avoid slow startup
-    from src.data import DataFetcher, LeanDataExporter
-
-    fetcher = DataFetcher(bucket_name=bucket)
-    candles = fetcher.fetch_candles(symbol, start_date, end_date)
-
-    if not candles:
-        logger.warning(f"No candles found for {symbol}")
-        return 0
-
-    exporter = LeanDataExporter(output_dir)
-    exporter.export_candles(candles, symbol)
-
-    logger.info(f"Fetched and exported {len(candles)} candles for {symbol}")
-    return len(candles)
 
 
 def _copy_lean_data_files(dest_dir: Path) -> None:
