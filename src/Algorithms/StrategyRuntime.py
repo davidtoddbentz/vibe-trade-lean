@@ -235,6 +235,7 @@ class StrategyRuntime(QCAlgorithm):
         self.entry_rule = self.ir.get("entry")
         self.exit_rules = self.ir.get("exits", [])
         self.gates = self.ir.get("gates", [])
+        self.overlays = self.ir.get("overlays", [])
         self.on_bar_invested_ops = self.ir.get("on_bar_invested", [])
         self.on_bar_ops = self.ir.get("on_bar", [])
 
@@ -510,6 +511,28 @@ class StrategyRuntime(QCAlgorithm):
 
         return True
 
+    def _compute_overlay_scale(self, bar) -> float:
+        """Compute combined overlay scaling factor for position sizing.
+
+        Evaluates all overlays that target "entry" and multiplies their
+        scale_size_frac values when conditions are true.
+        """
+        scale = 1.0
+        for overlay in self.overlays:
+            # Check if overlay targets entry
+            target_roles = overlay.get("target_roles", ["entry", "exit"])
+            if "entry" not in target_roles:
+                continue
+
+            condition = overlay.get("condition")
+            if self._evaluate_condition(condition, bar):
+                # Apply scale factor when condition is true
+                scale_size = overlay.get("scale_size_frac", 1.0)
+                scale *= scale_size
+                self.Log(f"   Overlay '{overlay.get('id', 'unknown')}' active: scale={scale_size}")
+
+        return scale
+
     def _evaluate_entry(self, bar):
         """Evaluate entry rule and execute if conditions met."""
         if not self.entry_rule:
@@ -517,7 +540,15 @@ class StrategyRuntime(QCAlgorithm):
 
         condition = self.entry_rule.get("condition")
         if self._evaluate_condition(condition, bar):
-            action = self.entry_rule.get("action", {})
+            action = self.entry_rule.get("action", {}).copy()  # Copy to modify
+
+            # Apply overlay scaling to position size
+            overlay_scale = self._compute_overlay_scale(bar)
+            if overlay_scale != 1.0:
+                original_allocation = action.get("allocation", 0.95)
+                action["allocation"] = original_allocation * overlay_scale
+                self.Log(f"   Position scaled: {original_allocation} -> {action['allocation']}")
+
             self._execute_action(action)
 
             # Detect direction from allocation or quantity
