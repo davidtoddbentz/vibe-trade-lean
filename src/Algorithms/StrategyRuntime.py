@@ -209,9 +209,16 @@ class StrategyRuntime(QCAlgorithm):
 
         # Data folder was set at the beginning of Initialize
 
-        # Set up symbol
+        # Set up primary symbol
         symbol_str = self.ir.get("symbol", "BTC-USD")
         self.symbol = self._add_symbol(symbol_str)
+
+        # Set up additional symbols for multi-symbol strategies
+        self.symbols = {self._normalize_symbol(symbol_str): self.symbol}
+        for additional_sym in self.ir.get("additional_symbols", []):
+            sym_obj = self._add_symbol(additional_sym)
+            self.symbols[self._normalize_symbol(additional_sym)] = sym_obj
+            self.Log(f"   Added additional symbol: {additional_sym}")
 
         # Initialize indicators
         self.indicators = {}
@@ -252,6 +259,20 @@ class StrategyRuntime(QCAlgorithm):
         # Use AddData with CustomCryptoData for CSV files
         return self.AddData(CustomCryptoData, symbol_str, self.resolution).Symbol
 
+    def _normalize_symbol(self, symbol_str: str) -> str:
+        """Normalize symbol string for dictionary keys (lowercase, no dashes)."""
+        return symbol_str.lower().replace("-", "")
+
+    def _get_symbol_obj(self, symbol_str: str | None) -> Symbol:
+        """Get Symbol object by string. Returns primary symbol if None."""
+        if symbol_str is None:
+            return self.symbol
+        normalized = self._normalize_symbol(symbol_str)
+        if normalized in self.symbols:
+            return self.symbols[normalized]
+        # Fallback to primary
+        return self.symbol
+
     def _load_ir_from_file(self, path: str) -> dict:
         """Load IR JSON from a file path."""
         try:
@@ -263,76 +284,87 @@ class StrategyRuntime(QCAlgorithm):
             raise ValueError(f"Invalid JSON in strategy IR file: {e}")
 
     def _create_indicators(self):
-        """Create all indicators defined in the IR."""
+        """Create all indicators defined in the IR.
+
+        Indicators can specify a 'symbol' field to use a different symbol than the primary.
+        This enables multi-symbol strategies (e.g., BTC/ETH correlation).
+        """
         for ind_def in self.ir.get("indicators", []):
             ind_type = ind_def.get("type")
             ind_id = ind_def.get("id")
 
+            # Get symbol for this indicator (defaults to primary symbol)
+            ind_symbol = self._get_symbol_obj(ind_def.get("symbol"))
+
             # All indicators use named resolution parameter to avoid signature issues
             if ind_type == "EMA":
                 period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.EMA(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.EMA(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "SMA":
                 period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.SMA(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.SMA(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "BB":
                 period = ind_def.get("period", 20)
                 mult = ind_def.get("multiplier", 2.0)
-                self.indicators[ind_id] = self.BB(self.symbol, period, mult, resolution=self.resolution)
+                self.indicators[ind_id] = self.BB(ind_symbol, period, mult, resolution=self.resolution)
             elif ind_type == "KC":
                 period = ind_def.get("period", 20)
                 mult = ind_def.get("multiplier", 2.0)
-                self.indicators[ind_id] = self.KCH(self.symbol, period, mult, resolution=self.resolution)
+                self.indicators[ind_id] = self.KCH(ind_symbol, period, mult, resolution=self.resolution)
             elif ind_type == "ATR":
                 period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.ATR(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.ATR(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "MAX":
                 period = ind_def.get("period", 50)
-                self.indicators[ind_id] = self.MAX(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.MAX(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "MIN":
                 period = ind_def.get("period", 50)
-                self.indicators[ind_id] = self.MIN(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.MIN(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "ROC":
                 period = ind_def.get("period", 1)
-                self.indicators[ind_id] = self.ROC(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.ROC(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "ADX":
                 period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.ADX(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.ADX(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "RSI":
                 period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.RSI(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.RSI(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "MACD":
                 fast = ind_def.get("fast_period", 12)
                 slow = ind_def.get("slow_period", 26)
                 signal = ind_def.get("signal_period", 9)
-                self.indicators[ind_id] = self.MACD(self.symbol, fast, slow, signal, resolution=self.resolution)
+                self.indicators[ind_id] = self.MACD(ind_symbol, fast, slow, signal, resolution=self.resolution)
             elif ind_type == "DC":
                 period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.DCH(self.symbol, period, resolution=self.resolution)
+                self.indicators[ind_id] = self.DCH(ind_symbol, period, resolution=self.resolution)
             elif ind_type == "VWAP":
                 period = ind_def.get("period", 0)
                 if period == 0:
                     # Intraday VWAP (resets daily)
-                    self.indicators[ind_id] = self.VWAP(self.symbol)
+                    self.indicators[ind_id] = self.VWAP(ind_symbol)
                 else:
                     # Rolling VWAP with period
-                    self.indicators[ind_id] = self.VWAP(self.symbol, period)
+                    self.indicators[ind_id] = self.VWAP(ind_symbol, period)
             elif ind_type == "RW":
                 # Rolling window for historical values (e.g., previous close)
                 period = ind_def.get("period", 2)
                 field = ind_def.get("field", "close")
                 # Store as a RollingWindow - handled specially in OnData
+                # Note: symbol stored for multi-symbol support
                 self.rolling_windows[ind_id] = {
                     "window": RollingWindow[float](period),
                     "field": field,
+                    "symbol": ind_symbol,
                 }
             elif ind_type == "VOL_SMA":
                 # Simple Moving Average of volume
                 period = ind_def.get("period", 20)
                 # Use SMA indicator on volume data
+                # Note: symbol stored for multi-symbol support
                 self.vol_sma_indicators[ind_id] = {
                     "sma": SimpleMovingAverage(period),
                     "period": period,
+                    "symbol": ind_symbol,
                 }
             elif ind_type == "RMM":
                 # Rolling Min/Max tracker
@@ -343,6 +375,7 @@ class StrategyRuntime(QCAlgorithm):
                     "window": RollingWindow[float](period),
                     "mode": mode,
                     "field": field,
+                    "symbol": ind_symbol,
                 }
             else:
                 self.Log(f"⚠️ Unknown indicator type: {ind_type}")
