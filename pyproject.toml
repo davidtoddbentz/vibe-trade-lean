@@ -1,0 +1,35 @@
+[project]
+name = "vibe-trade-lean"
+version = "0.1.0"
+description = "Custom QuantConnect LEAN Docker image with Pub/Sub data feed"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "vibe-trade-shared",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []  # No Python package - just tests
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+    "httpx>=0.27.0",
+    "ruff>=0.14.13",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.uv.sources]
+vibe-trade-shared = { path = "../vibe-trade-shared", editable = true }

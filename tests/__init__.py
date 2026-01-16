@@ -1,0 +1,1 @@
+# LEAN service smoke tests

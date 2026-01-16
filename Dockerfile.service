@@ -53,5 +53,7 @@ ENV PYTHONPATH="/Lean:${PYTHONPATH}"
 EXPOSE 8080
 
 # Run FastAPI backtest service
+# Override base image ENTRYPOINT (which runs LEAN CLI) with our HTTP server
 WORKDIR /Lean
+ENTRYPOINT []
 CMD ["/opt/miniconda3/bin/python3", "/Lean/serve_backtest.py"]

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,6 +61,13 @@ class BacktestDataInput(BaseModel):
     resolution: str
     bars: list[OHLCVBar] | None = None  # Inline data
     gcs_uri: str | None = None  # GCS reference (future)
+
+    @model_validator(mode="after")
+    def validate_data_source(self):
+        """Require either bars or gcs_uri."""
+        if self.bars is None and self.gcs_uri is None:
+            raise ValueError("Must provide either 'bars' or 'gcs_uri'")
+        return self
 
 
 class BacktestConfig(BaseModel):
