@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from google.cloud import storage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,7 +56,7 @@ class OHLCVBar(BaseModel):
     t: int  # timestamp (ms since epoch)
     o: float  # open
     h: float  # high
-    l: float  # low
+    low: float = Field(alias="l")  # low - renamed from 'l' for lint compliance
     c: float  # close
     v: float  # volume
 
@@ -559,7 +559,7 @@ def _write_ohlcv_bars_to_csv(
                 dt_str,
                 f"{bar.o:.2f}",
                 f"{bar.h:.2f}",
-                f"{bar.l:.2f}",
+                f"{bar.low:.2f}",
                 f"{bar.c:.2f}",
                 f"{bar.v:.2f}",
             ])
@@ -643,7 +643,7 @@ def _run_lean(
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
 
-    logger.info(f"Running LEAN backtest")
+    logger.info("Running LEAN backtest")
 
     cmd = [
         "dotnet",

@@ -66,7 +66,7 @@ class CustomCryptoData(PythonData):
             try:
                 with open(CustomCryptoData.DebugLogPath, "a") as f:
                     f.write(msg + "\n")
-            except:
+            except Exception:
                 pass
 
     def GetSource(self, config, date, isLiveMode):
@@ -146,7 +146,7 @@ class StrategyRuntime(QCAlgorithm):
             # Check for btc_usd_data.csv specifically
             expected_file = os.path.join(CustomCryptoData.DataFolder, "btc_usd_data.csv")
             if os.path.exists(expected_file):
-                self.Debug(f"[INIT] ✅ Found btc_usd_data.csv")
+                self.Debug("[INIT] ✅ Found btc_usd_data.csv")
                 # Read first few lines to verify format
                 with open(expected_file, 'r') as f:
                     lines = f.readlines()[:3]
@@ -250,7 +250,7 @@ class StrategyRuntime(QCAlgorithm):
         # Crossover detection state
         self._cross_prev = {}  # Stores previous (left, right) values per condition
 
-        self.Log(f"✅ StrategyRuntime initialized")
+        self.Log("✅ StrategyRuntime initialized")
         self.Log(f"   Strategy: {self.ir.get('strategy_name', 'Unknown')}")
         self.Log(f"   Symbol: {self.symbol}")
         self.Log(f"   Indicators: {len(self.indicators)}")
@@ -1118,18 +1118,18 @@ class StrategyRuntime(QCAlgorithm):
         profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else 0
 
         # Log summary
-        self.Log(f"")
+        self.Log("")
         self.Log(f"{'='*60}")
         self.Log(f"📊 BACKTEST RESULTS: {self.ir.get('strategy_name', 'Unknown')}")
         self.Log(f"{'='*60}")
-        self.Log(f"")
-        self.Log(f"PERFORMANCE")
+        self.Log("")
+        self.Log("PERFORMANCE")
         self.Log(f"  Initial Capital:    ${initial_cash:,.2f}")
         self.Log(f"  Final Equity:       ${portfolio_value:,.2f}")
         self.Log(f"  Total Return:       {total_return:+.2f}%")
         self.Log(f"  Max Drawdown:       {self.max_drawdown:.2f}%")
-        self.Log(f"")
-        self.Log(f"TRADES")
+        self.Log("")
+        self.Log("TRADES")
         self.Log(f"  Total Trades:       {len(self.trades)}")
         self.Log(f"  Winning Trades:     {len(winning_trades)}")
         self.Log(f"  Losing Trades:      {len(losing_trades)}")
@@ -1137,14 +1137,14 @@ class StrategyRuntime(QCAlgorithm):
         self.Log(f"  Avg Win:            {avg_win:+.2f}%")
         self.Log(f"  Avg Loss:           {avg_loss:+.2f}%")
         self.Log(f"  Profit Factor:      {profit_factor:.2f}")
-        self.Log(f"")
+        self.Log("")
 
         # Log individual trades
         if self.trades:
-            self.Log(f"TRADE LOG")
+            self.Log("TRADE LOG")
             for i, t in enumerate(self.trades):
                 self.Log(f"  #{i+1}: {t['direction'].upper()} @ ${t['entry_price']:.2f} -> ${t.get('exit_price', 0):.2f} | P&L: {t.get('pnl_percent', 0):+.2f}% | Exit: {t.get('exit_reason', 'N/A')}")
-            self.Log(f"")
+            self.Log("")
 
         self.Log(f"{'='*60}")
 
@@ -1172,7 +1172,6 @@ class StrategyRuntime(QCAlgorithm):
         }
 
         # Write to data folder (same location as strategy_ir.json and debug.log)
-        import os
         output_path = os.path.join(CustomCryptoData.DataFolder, "strategy_output.json")
         try:
             with open(output_path, "w") as f:
