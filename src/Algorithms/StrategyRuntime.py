@@ -239,6 +239,9 @@ class StrategyRuntime(QCAlgorithm):
         self.max_drawdown = 0.0
         self.bar_count = 0  # Count bars for equity sampling
 
+        # Crossover detection state
+        self._cross_prev = {}  # Stores previous (left, right) values per condition
+
         self.Log(f"✅ StrategyRuntime initialized")
         self.Log(f"   Strategy: {self.ir.get('strategy_name', 'Unknown')}")
         self.Log(f"   Symbol: {self.symbol}")
@@ -412,9 +415,12 @@ class StrategyRuntime(QCAlgorithm):
             # Check entry
             self._evaluate_entry(bar)
 
+        # Increment bar count AFTER all processing (0-indexed)
+        self.bar_count += 1
+
     def _track_equity(self, bar):
         """Track portfolio equity for equity curve."""
-        self.bar_count += 1
+        # Note: bar_count is 0-indexed and incremented AFTER processing
         equity = self.Portfolio.TotalPortfolioValue
         cash = self.Portfolio.Cash
         holdings = equity - cash
@@ -427,7 +433,8 @@ class StrategyRuntime(QCAlgorithm):
             self.max_drawdown = drawdown
 
         # Sample equity curve (every 60 bars ~= hourly for minute data)
-        if self.bar_count == 1 or self.bar_count % 60 == 0:
+        # Note: bar_count is 0-indexed at this point
+        if self.bar_count == 0 or self.bar_count % 60 == 0:
             self.equity_curve.append({
                 "time": str(self.Time),
                 "equity": float(equity),
@@ -480,13 +487,19 @@ class StrategyRuntime(QCAlgorithm):
             action = self.entry_rule.get("action", {})
             self._execute_action(action)
 
+            # Detect direction from allocation or quantity
+            allocation = action.get("allocation", 0.95)
+            quantity = float(self.Portfolio[self.symbol].Quantity)
+            direction = "short" if allocation < 0 or quantity < 0 else "long"
+
             # Track trade
             self.current_trade = {
                 "symbol": str(self.symbol),
-                "direction": "long",  # TODO: detect short
+                "direction": direction,
                 "entry_time": str(self.Time),
                 "entry_price": float(bar.Close),
-                "quantity": float(self.Portfolio[self.symbol].Quantity),
+                "entry_bar": self.bar_count,  # Bar index where entry occurred
+                "quantity": abs(quantity),  # Store absolute quantity
             }
 
             # Run on_fill hooks
@@ -507,11 +520,20 @@ class StrategyRuntime(QCAlgorithm):
                 if self.current_trade:
                     entry_price = self.current_trade["entry_price"]
                     exit_price = float(bar.Close)
-                    pnl = (exit_price - entry_price) * self.current_trade.get("quantity", 0)
-                    pnl_pct = ((exit_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+                    quantity = self.current_trade.get("quantity", 0)
+                    direction = self.current_trade.get("direction", "long")
+
+                    # PnL calculation: short profits when price drops
+                    if direction == "short":
+                        pnl = (entry_price - exit_price) * quantity
+                        pnl_pct = ((entry_price / exit_price) - 1) * 100 if exit_price > 0 else 0
+                    else:
+                        pnl = (exit_price - entry_price) * quantity
+                        pnl_pct = ((exit_price / entry_price) - 1) * 100 if entry_price > 0 else 0
 
                     self.current_trade["exit_time"] = str(self.Time)
                     self.current_trade["exit_price"] = exit_price
+                    self.current_trade["exit_bar"] = self.bar_count
                     self.current_trade["pnl"] = pnl
                     self.current_trade["pnl_percent"] = pnl_pct
                     self.current_trade["exit_reason"] = exit_rule.get("id", "unknown")
@@ -567,6 +589,9 @@ class StrategyRuntime(QCAlgorithm):
         elif cond_type == "regime":
             # Handle regime conditions by mapping to indicator comparisons
             return self._evaluate_regime(condition, bar)
+
+        elif cond_type == "cross":
+            return self._evaluate_cross(condition, bar)
 
         else:
             self.Log(f"⚠️ Unknown condition type: {cond_type}")
@@ -628,6 +653,39 @@ class StrategyRuntime(QCAlgorithm):
         # Unknown metric - return True to not block
         self.Log(f"⚠️ Unknown regime metric: {metric}")
         return True
+
+    def _evaluate_cross(self, condition: dict, bar) -> bool:
+        """Evaluate a crossover condition.
+
+        Detects when left crosses above or below right by comparing
+        current and previous values.
+        """
+        left_val = self._resolve_value(condition.get("left"), bar)
+        right_val = self._resolve_value(condition.get("right"), bar)
+
+        # Create a unique key for this condition
+        key = str(condition)
+        prev = self._cross_prev.get(key)
+
+        # Store current values for next bar
+        self._cross_prev[key] = (left_val, right_val)
+
+        # First bar after indicator warmup - no previous values yet
+        if prev is None:
+            return False
+
+        prev_left, prev_right = prev
+        direction = condition.get("direction", "above")
+
+        if direction in ("above", "cross_above"):
+            # Crossed above: was below or equal, now above
+            return prev_left <= prev_right and left_val > right_val
+        elif direction in ("below", "cross_below"):
+            # Crossed below: was above or equal, now below
+            return prev_left >= prev_right and left_val < right_val
+        else:
+            self.Log(f"⚠️ Unknown cross direction: {direction}")
+            return False
 
     def _resolve_value(self, value_ref: dict, bar) -> float:
         """Resolve a value reference to a float."""
@@ -954,6 +1012,34 @@ class StrategyRuntime(QCAlgorithm):
 
     def OnEndOfAlgorithm(self):
         """Called when algorithm ends."""
+        # Close any open position and record as trade
+        if self.current_trade and self.Portfolio.Invested:
+            # Get last known price
+            last_price = float(self.Portfolio[self.symbol].Price)
+            entry_price = self.current_trade["entry_price"]
+            quantity = self.current_trade.get("quantity", 0)
+            direction = self.current_trade.get("direction", "long")
+
+            # PnL calculation: short profits when price drops
+            if direction == "short":
+                pnl = (entry_price - last_price) * quantity
+                pnl_pct = ((entry_price / last_price) - 1) * 100 if last_price > 0 else 0
+            else:
+                pnl = (last_price - entry_price) * quantity
+                pnl_pct = ((last_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+
+            self.current_trade["exit_time"] = str(self.Time)
+            self.current_trade["exit_price"] = last_price
+            # bar_count has been incremented past the last bar, so use -1
+            self.current_trade["exit_bar"] = self.bar_count - 1
+            self.current_trade["pnl"] = pnl
+            self.current_trade["pnl_percent"] = pnl_pct
+            self.current_trade["exit_reason"] = "end_of_backtest"
+
+            self.trades.append(self.current_trade)
+            self.current_trade = None
+            self.Log(f"📊 Closed open position at end: ${last_price:.2f}")
+
         portfolio_value = self.Portfolio.TotalPortfolioValue
         initial_cash = float(self.GetParameter("initial_cash") or 100000)
 
