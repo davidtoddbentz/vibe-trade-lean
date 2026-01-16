@@ -1,0 +1,63 @@
+# Parallel LEAN backtest containers for faster E2E testing
+#
+# Usage:
+#   docker-compose -f docker-compose.parallel.yml up -d
+#   pytest tests/e2e/ -n 4  # Use pytest-xdist with 4 workers
+#
+# This creates 4 LEAN containers on ports 8081-8084
+# Tests should distribute requests across these ports
+
+version: '3.8'
+
+services:
+  lean-1:
+    image: lean-backtest-service
+    container_name: lean-backtest-1
+    ports:
+      - "8081:8080"
+    environment:
+      - PYTHONPATH=/Lean
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  lean-2:
+    image: lean-backtest-service
+    container_name: lean-backtest-2
+    ports:
+      - "8082:8080"
+    environment:
+      - PYTHONPATH=/Lean
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  lean-3:
+    image: lean-backtest-service
+    container_name: lean-backtest-3
+    ports:
+      - "8083:8080"
+    environment:
+      - PYTHONPATH=/Lean
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  lean-4:
+    image: lean-backtest-service
+    container_name: lean-backtest-4
+    ports:
+      - "8084:8080"
+    environment:
+      - PYTHONPATH=/Lean
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
