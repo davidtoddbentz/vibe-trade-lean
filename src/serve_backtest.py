@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Vibe Trade Backtest Service")
 
+# Algorithm source directory - Docker container path or local fallback
+ALGO_SRC_DIR = (
+    Path("/Lean/Algorithm.Python")
+    if Path("/Lean/Algorithm.Python").exists()
+    else Path(__file__).parent / "Algorithms"
+)
+
 
 def generate_backtest_id() -> str:
     """Generate a structured backtest ID: {timestamp}_{short_uuid}."""
@@ -221,11 +228,12 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         # Copy LEAN data files
         _copy_lean_data_files(data_dir)
 
-        # Copy StrategyRuntime
-        runtime_src = Path("/Lean/Algorithm.Python/StrategyRuntime.py")
-        if not runtime_src.exists():
-            runtime_src = Path(__file__).parent / "Algorithms" / "StrategyRuntime.py"
-        shutil.copy(runtime_src, algo_dir / "StrategyRuntime.py")
+        # Copy algorithm files to temp directory
+        for filename in ["StrategyRuntime.py", "typed_conditions.py"]:
+            src_file = ALGO_SRC_DIR / filename
+            if not src_file.exists():
+                raise FileNotFoundError(f"Required algorithm file not found: {src_file}")
+            shutil.copy(src_file, algo_dir / filename)
 
         # Parse dates from config (YYYY-MM-DD format)
         start_date = request.config.start_date.replace("-", "")

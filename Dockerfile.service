@@ -38,6 +38,7 @@ RUN mkdir -p /Lean/src
 # Copy Python modules
 COPY src/data/ /Lean/src/data/
 COPY src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/
+COPY src/Algorithms/typed_conditions.py /Lean/Algorithm.Python/
 COPY src/serve_backtest.py /Lean/
 
 # Create __init__.py for src module
