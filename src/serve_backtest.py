@@ -199,6 +199,12 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         with open(ir_path, "w") as f:
             json.dump(request.strategy_ir, f, indent=2)
 
+        # Debug: log fee/slippage values
+        fee_pct = request.strategy_ir.get("fee_pct", 0.0)
+        slippage_pct = request.strategy_ir.get("slippage_pct", 0.0)
+        if fee_pct > 0 or slippage_pct > 0:
+            logger.info(f"Trading costs in IR: fee_pct={fee_pct}%, slippage_pct={slippage_pct}%")
+
         # Write inline market data for primary symbol
         if request.data.bars:
             candle_count = _write_ohlcv_bars_to_csv(
@@ -431,6 +437,12 @@ def _run_lean(
         timeout=3600,
         env=env,
     )
+
+    # Log LEAN output for debugging
+    if result.stdout:
+        for line in result.stdout.split("\n"):
+            if "[COSTS]" in line or "Trading costs" in line:
+                logger.info(f"LEAN: {line}")
 
     if result.returncode != 0:
         return {

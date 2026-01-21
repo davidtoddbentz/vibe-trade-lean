@@ -1,0 +1,33 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+.env.local
+.env.*.local
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+*.log
+*.md
+tests/
+test/
+htmlcov/
+.coverage
+.pytest_cache/
+.ruff_cache/
+# Keep packages/ - needed for build
+# Keep scripts/ - needed for entrypoint
+# Keep src/ - needed for algorithms
+# Keep csproj/ - needed for C# build
+# Keep data/ - needed for symbol properties

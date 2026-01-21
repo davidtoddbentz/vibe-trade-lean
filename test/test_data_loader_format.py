@@ -198,10 +198,10 @@ class TestSyntheticScenarios:
     def test_uptrend_with_pullback_generates_data(self):
         """Verify uptrend scenario generates valid data."""
         loader = SyntheticDataLoader()
-        expected = loader.generate_uptrend_with_pullback(n_bars=100)
+        expected = loader.generate_uptrend_with_pullback(n_bars=200)
         candles = loader.load("BTCUSD", datetime(2024, 1, 1), datetime(2024, 1, 1))
 
-        assert len(candles) == 100
+        assert len(candles) == 200
         assert all(c.open > 0 for c in candles)
         assert all(c.high >= c.low for c in candles)
 

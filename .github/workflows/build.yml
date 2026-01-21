@@ -10,20 +10,33 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-    
-    - name: Build Docker image
+
+    - name: Build Docker image with cache
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        load: true
+        tags: vibe-trade-lean:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Verify build
       run: |
-        docker build -t vibe-trade-lean:latest .
         docker run --rm --entrypoint="" vibe-trade-lean:latest \
           ls -la /Lean/Launcher/bin/Debug/PubSubDataQueueHandler.dll
-    
+
     - name: Test LEAN launcher
       run: |
         docker run --rm vibe-trade-lean:latest --help
+
+    - name: Clean up Docker
+      if: always()
+      run: docker system prune -f
 

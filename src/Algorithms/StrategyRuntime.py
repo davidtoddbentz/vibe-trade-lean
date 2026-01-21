@@ -54,6 +54,35 @@ class CompareOp(str, Enum):
 
 
 # =============================================================================
+# Custom Fee Model for Percentage-Based Fees
+# =============================================================================
+
+
+class PercentageFeeModel(FeeModel):
+    """Fee model that charges a percentage of trade value.
+
+    This allows configuring fees as a percentage (e.g., 0.1% per trade)
+    rather than a fixed dollar amount.
+    """
+
+    def __init__(self, fee_percentage: float):
+        """
+        Args:
+            fee_percentage: Fee as a percentage (e.g., 0.1 for 0.1%)
+        """
+        super().__init__()
+        self.fee_percentage = fee_percentage / 100.0  # Convert to decimal
+
+    def GetOrderFee(self, parameters):
+        """Calculate fee as percentage of trade value."""
+        price = parameters.Security.Price
+        quantity = abs(parameters.Order.Quantity)
+        trade_value = price * quantity
+        fee = trade_value * self.fee_percentage
+        return OrderFee(CashAmount(fee, "USD"))
+
+
+# =============================================================================
 # Custom Data Reader for CSV files
 # =============================================================================
 
@@ -228,6 +257,9 @@ class StrategyRuntime(QCAlgorithm):
             self.symbols[self._normalize_symbol(additional_sym)] = sym_obj
             self.Log(f"   Added additional symbol: {additional_sym}")
 
+        # Configure trading costs (fees and slippage)
+        self._configure_trading_costs()
+
         # Initialize indicators
         self.indicators = {}
         self.rolling_windows = {}  # For RollingWindow indicators
@@ -267,6 +299,63 @@ class StrategyRuntime(QCAlgorithm):
         """Add symbol using custom data reader for CSV files."""
         # Use AddData with CustomCryptoData for CSV files
         return self.AddData(CustomCryptoData, symbol_str, self.resolution).Symbol
+
+    def _configure_trading_costs(self):
+        """Configure trading costs for manual PnL calculations.
+
+        Reads fee_pct and slippage_pct from IR and stores them for use in
+        trade tracking. Costs are applied manually in _evaluate_entry() and
+        _evaluate_exits() rather than via LEAN's built-in models to ensure
+        our custom trade records accurately reflect the costs.
+
+        fee_pct: Trading fee as percentage of trade value (e.g., 0.1 = 0.1%)
+        slippage_pct: Slippage as percentage of price (e.g., 0.05 = 0.05%)
+        """
+        fee_pct = self.ir.get("fee_pct", 0.0)
+        slippage_pct = self.ir.get("slippage_pct", 0.0)
+
+        # Store for manual PnL calculations in trade tracking
+        self.fee_pct = fee_pct
+        self.slippage_pct = slippage_pct
+
+        if fee_pct > 0 or slippage_pct > 0:
+            self.Log(f"   Trading costs: fee={fee_pct}%, slippage={slippage_pct}%")
+        else:
+            self.Log(f"   No trading costs configured")
+
+    def _apply_slippage(self, price: float, is_buy: bool) -> float:
+        """Apply slippage to a price.
+
+        For buys: price increases (pay more)
+        For sells: price decreases (receive less)
+
+        Args:
+            price: The base price
+            is_buy: True for buy orders, False for sell orders
+
+        Returns:
+            Price adjusted for slippage
+        """
+        if self.slippage_pct <= 0:
+            return price
+        slip_mult = self.slippage_pct / 100.0
+        if is_buy:
+            return price * (1 + slip_mult)  # Pay more
+        else:
+            return price * (1 - slip_mult)  # Receive less
+
+    def _calculate_fee(self, trade_value: float) -> float:
+        """Calculate fee for a given trade value.
+
+        Args:
+            trade_value: Absolute value of the trade (price × quantity)
+
+        Returns:
+            Fee amount in the same currency
+        """
+        if self.fee_pct <= 0:
+            return 0.0
+        return abs(trade_value) * (self.fee_pct / 100.0)
 
     def _normalize_symbol(self, symbol_str: str) -> str:
         """Normalize symbol string for dictionary keys (lowercase, no dashes)."""
@@ -564,14 +653,22 @@ class StrategyRuntime(QCAlgorithm):
             quantity = float(self.Portfolio[self.symbol].Quantity)
             direction = "short" if allocation < 0 or quantity < 0 else "long"
 
-            # Track trade
+            # Track trade with slippage-adjusted entry price
+            # For long: buying, so pay more (slippage up)
+            # For short: selling, so receive less (slippage down)
+            is_buy_entry = (direction == "long")
+            entry_price = self._apply_slippage(float(bar.Close), is_buy_entry)
+            entry_value = entry_price * abs(quantity)
+            entry_fee = self._calculate_fee(entry_value)
+
             self.current_trade = {
                 "symbol": str(self.symbol),
                 "direction": direction,
                 "entry_time": str(self.Time),
-                "entry_price": float(bar.Close),
+                "entry_price": entry_price,
                 "entry_bar": self.bar_count,  # Bar index where entry occurred
                 "quantity": abs(quantity),  # Store absolute quantity
+                "entry_fee": entry_fee,  # Fee paid on entry
             }
 
             # Run on_fill hooks
@@ -591,23 +688,40 @@ class StrategyRuntime(QCAlgorithm):
                 # Complete trade tracking before executing action
                 if self.current_trade:
                     entry_price = self.current_trade["entry_price"]
-                    exit_price = float(bar.Close)
                     quantity = self.current_trade.get("quantity", 0)
                     direction = self.current_trade.get("direction", "long")
+                    entry_fee = self.current_trade.get("entry_fee", 0)
+
+                    # Apply slippage to exit price
+                    # For long exit: selling, so receive less (slippage down)
+                    # For short exit: buying/covering, so pay more (slippage up)
+                    is_buy_exit = (direction == "short")  # Short covers with a buy
+                    exit_price = self._apply_slippage(float(bar.Close), is_buy_exit)
+
+                    # Calculate exit fee
+                    exit_value = exit_price * quantity
+                    exit_fee = self._calculate_fee(exit_value)
+                    total_fees = entry_fee + exit_fee
 
                     # PnL calculation: short profits when price drops
+                    # Subtract total fees from PnL
                     if direction == "short":
-                        pnl = (entry_price - exit_price) * quantity
-                        pnl_pct = ((entry_price / exit_price) - 1) * 100 if exit_price > 0 else 0
+                        gross_pnl = (entry_price - exit_price) * quantity
                     else:
-                        pnl = (exit_price - entry_price) * quantity
-                        pnl_pct = ((exit_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+                        gross_pnl = (exit_price - entry_price) * quantity
+
+                    pnl = gross_pnl - total_fees
+                    # Calculate pnl_pct based on entry value
+                    entry_value = entry_price * quantity
+                    pnl_pct = (pnl / entry_value) * 100 if entry_value > 0 else 0
 
                     self.current_trade["exit_time"] = str(self.Time)
                     self.current_trade["exit_price"] = exit_price
                     self.current_trade["exit_bar"] = self.bar_count
                     self.current_trade["pnl"] = pnl
                     self.current_trade["pnl_percent"] = pnl_pct
+                    self.current_trade["exit_fee"] = exit_fee
+                    self.current_trade["total_fees"] = total_fees
                     self.current_trade["exit_reason"] = exit_rule.get("id", "unknown")
 
                     self.trades.append(self.current_trade)
@@ -1858,15 +1972,45 @@ class StrategyRuntime(QCAlgorithm):
                 return bar.Close < level_value
 
     def _execute_action(self, action: dict):
-        """Execute an action from IR."""
+        """Execute an action from IR.
+
+        Supports multiple sizing modes for set_holdings:
+        - pct_equity: uses allocation field directly (fraction of portfolio)
+        - fixed_usd: fixed USD amount, converted to quantity at current price
+        - fixed_units: fixed number of units/shares to trade
+        """
         if not action:
             return
 
         action_type = action.get("type")
 
         if action_type == "set_holdings":
-            allocation = action.get("allocation", 0.95)
-            self.SetHoldings(self.symbol, allocation)
+            sizing_mode = action.get("sizing_mode", "pct_equity")
+
+            if sizing_mode == "pct_equity":
+                # Original behavior - allocation is a fraction of portfolio
+                allocation = action.get("allocation", 0.95)
+                self.SetHoldings(self.symbol, allocation)
+
+            elif sizing_mode == "fixed_usd":
+                # Fixed USD amount - convert to quantity at current price
+                fixed_usd = action.get("fixed_usd", 1000.0)
+                price = self.Securities[self.symbol].Price
+                if price > 0:
+                    quantity = fixed_usd / price
+                    self.MarketOrder(self.symbol, quantity)
+                    self.Log(f"   Fixed USD: ${abs(fixed_usd):.2f} -> {abs(quantity):.6f} units @ ${price:.2f}")
+                else:
+                    self.Log(f"⚠️ Cannot execute fixed_usd: price is {price}")
+
+            elif sizing_mode == "fixed_units":
+                # Fixed number of units - use directly
+                fixed_units = action.get("fixed_units", 1.0)
+                self.MarketOrder(self.symbol, fixed_units)
+                self.Log(f"   Fixed units: {abs(fixed_units):.6f}")
+
+            else:
+                self.Log(f"⚠️ Unknown sizing_mode: {sizing_mode}")
 
         elif action_type == "liquidate":
             self.Liquidate(self.symbol)
@@ -1915,19 +2059,35 @@ class StrategyRuntime(QCAlgorithm):
         """Called when algorithm ends."""
         # Close any open position and record as trade
         if self.current_trade and self.Portfolio.Invested:
-            # Get last known price
-            last_price = float(self.Portfolio[self.symbol].Price)
+            # Get last known price and apply slippage
+            raw_price = float(self.Portfolio[self.symbol].Price)
             entry_price = self.current_trade["entry_price"]
             quantity = self.current_trade.get("quantity", 0)
             direction = self.current_trade.get("direction", "long")
+            entry_fee = self.current_trade.get("entry_fee", 0)
+
+            # Apply slippage to exit price
+            # For long exit: selling, so receive less (slippage down)
+            # For short exit: buying/covering, so pay more (slippage up)
+            is_buy_exit = (direction == "short")  # Short covers with a buy
+            last_price = self._apply_slippage(raw_price, is_buy_exit)
+
+            # Calculate exit fee
+            exit_value = last_price * quantity
+            exit_fee = self._calculate_fee(exit_value)
+            total_fees = entry_fee + exit_fee
 
             # PnL calculation: short profits when price drops
+            # Subtract total fees from PnL
             if direction == "short":
-                pnl = (entry_price - last_price) * quantity
-                pnl_pct = ((entry_price / last_price) - 1) * 100 if last_price > 0 else 0
+                gross_pnl = (entry_price - last_price) * quantity
             else:
-                pnl = (last_price - entry_price) * quantity
-                pnl_pct = ((last_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+                gross_pnl = (last_price - entry_price) * quantity
+
+            pnl = gross_pnl - total_fees
+            # Calculate pnl_pct based on entry value
+            entry_value = entry_price * quantity
+            pnl_pct = (pnl / entry_value) * 100 if entry_value > 0 else 0
 
             self.current_trade["exit_time"] = str(self.Time)
             self.current_trade["exit_price"] = last_price
@@ -1935,6 +2095,8 @@ class StrategyRuntime(QCAlgorithm):
             self.current_trade["exit_bar"] = self.bar_count - 1
             self.current_trade["pnl"] = pnl
             self.current_trade["pnl_percent"] = pnl_pct
+            self.current_trade["exit_fee"] = exit_fee
+            self.current_trade["total_fees"] = total_fees
             self.current_trade["exit_reason"] = "end_of_backtest"
 
             self.trades.append(self.current_trade)
