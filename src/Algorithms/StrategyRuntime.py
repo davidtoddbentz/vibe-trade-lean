@@ -2103,11 +2103,18 @@ class StrategyRuntime(QCAlgorithm):
             self.current_trade = None
             self.Log(f"📊 Closed open position at end: ${last_price:.2f}")
 
-        portfolio_value = self.Portfolio.TotalPortfolioValue
         initial_cash = float(self.GetParameter("initial_cash") or 100000)
 
-        # Calculate statistics
-        total_return = ((portfolio_value / initial_cash) - 1) * 100
+        # Calculate final equity from trade PnLs (includes manual fee calculations)
+        # This is more accurate than LEAN's portfolio value which doesn't include our manual fees
+        total_trade_pnl = sum(t.get("pnl", 0) for t in self.trades)
+        final_equity = initial_cash + total_trade_pnl
+
+        # Also get LEAN's portfolio value for comparison/logging
+        lean_portfolio_value = self.Portfolio.TotalPortfolioValue
+
+        # Calculate statistics using fee-adjusted final equity
+        total_return = ((final_equity / initial_cash) - 1) * 100
         winning_trades = [t for t in self.trades if t.get("pnl", 0) > 0]
         losing_trades = [t for t in self.trades if t.get("pnl", 0) <= 0]
         win_rate = len(winning_trades) / len(self.trades) * 100 if self.trades else 0
@@ -2124,7 +2131,9 @@ class StrategyRuntime(QCAlgorithm):
         self.Log("")
         self.Log("PERFORMANCE")
         self.Log(f"  Initial Capital:    ${initial_cash:,.2f}")
-        self.Log(f"  Final Equity:       ${portfolio_value:,.2f}")
+        self.Log(f"  Final Equity:       ${final_equity:,.2f}")
+        if abs(final_equity - lean_portfolio_value) > 0.01:
+            self.Log(f"  (LEAN Portfolio:    ${lean_portfolio_value:,.2f} - before manual fees)")
         self.Log(f"  Total Return:       {total_return:+.2f}%")
         self.Log(f"  Max Drawdown:       {self.max_drawdown:.2f}%")
         self.Log("")
@@ -2154,7 +2163,7 @@ class StrategyRuntime(QCAlgorithm):
             "strategy_name": self.ir.get("strategy_name", "Unknown"),
             "symbol": str(self.symbol),
             "initial_cash": initial_cash,
-            "final_equity": float(portfolio_value),
+            "final_equity": float(final_equity),
             "total_return_pct": total_return,
             "max_drawdown_pct": self.max_drawdown,
             "statistics": {
