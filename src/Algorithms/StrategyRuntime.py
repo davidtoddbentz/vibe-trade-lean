@@ -162,6 +162,12 @@ class StrategyRuntime(QCAlgorithm):
 
     def Initialize(self):
         """Initialize the algorithm."""
+        # CRITICAL: Allow small orders to be placed
+        # By default, LEAN silently skips orders below MinimumOrderMarginPortfolioPercentage
+        # This causes small positions (like 1% of equity in BTC at $100k) to be ignored
+        # See: https://www.quantconnect.com/forum/discussion/2978/minimum-order-clip-size/
+        self.Settings.MinimumOrderMarginPortfolioPercentage = 0
+
         # Set data folder FIRST - before any subscriptions
         data_folder = self.GetParameter("data_folder")
         if data_folder:
@@ -296,9 +302,30 @@ class StrategyRuntime(QCAlgorithm):
         self.Log(f"   Indicators: {len(self.indicators)}")
 
     def _add_symbol(self, symbol_str: str) -> Symbol:
-        """Add symbol using custom data reader for CSV files."""
+        """Add symbol using custom data reader for CSV files.
+        
+        After adding the symbol, we configure its lot size to allow
+        fractional orders (like 0.1 BTC for a $10 order).
+        """
         # Use AddData with CustomCryptoData for CSV files
-        return self.AddData(CustomCryptoData, symbol_str, self.resolution).Symbol
+        security = self.AddData(CustomCryptoData, symbol_str, self.resolution)
+        symbol = security.Symbol
+        
+        # CRITICAL: Configure lot size to allow fractional orders
+        # By default, custom data uses lot size 1, which prevents orders < 1 unit
+        # For crypto-like assets, we need very small lot sizes (0.00000001)
+        security.SymbolProperties = SymbolProperties(
+            description=symbol_str,
+            quoteCurrency="USD",
+            contractMultiplier=1,
+            minimumPriceVariation=0.01,
+            lotSize=0.00000001,  # Allow tiny fractional orders
+            marketTicker=symbol_str,
+            minimumOrderSize=0.00000001  # Allow tiny orders
+        )
+        self.Log(f"   Added symbol: {symbol_str} (lot_size=0.00000001)")
+        
+        return symbol
 
     def _configure_trading_costs(self):
         """Configure trading costs for manual PnL calculations.
@@ -636,7 +663,8 @@ class StrategyRuntime(QCAlgorithm):
             return
 
         condition = self.entry_rule.get("condition")
-        if self._evaluate_condition(condition, bar):
+        result = self._evaluate_condition(condition, bar)
+        if result:
             action = self.entry_rule.get("action", {}).copy()  # Copy to modify
 
             # Apply overlay scaling to position size
@@ -646,7 +674,7 @@ class StrategyRuntime(QCAlgorithm):
                 action["allocation"] = original_allocation * overlay_scale
                 self.Log(f"   Position scaled: {original_allocation} -> {action['allocation']}")
 
-            self._execute_action(action)
+            self._execute_action(action, bar)
 
             # Detect direction from allocation or quantity
             allocation = action.get("allocation", 0.95)
@@ -1971,13 +1999,21 @@ class StrategyRuntime(QCAlgorithm):
             else:
                 return bar.Close < level_value
 
-    def _execute_action(self, action: dict):
+    def _execute_action(self, action: dict, bar=None):
         """Execute an action from IR.
 
         Supports multiple sizing modes for set_holdings:
         - pct_equity: uses allocation field directly (fraction of portfolio)
         - fixed_usd: fixed USD amount, converted to quantity at current price
         - fixed_units: fixed number of units/shares to trade
+
+        Note: For all sizing modes, we use CalculateOrderQuantity + MarketOrder
+        instead of SetHoldings to ensure small orders are properly executed.
+        See: https://www.quantconnect.com/forum/discussion/2978/minimum-order-clip-size/
+
+        Args:
+            action: The action dict from IR (type, sizing_mode, allocation, etc.)
+            bar: The current bar data (used for fixed_usd/fixed_units pricing)
         """
         if not action:
             return
@@ -1988,26 +2024,50 @@ class StrategyRuntime(QCAlgorithm):
             sizing_mode = action.get("sizing_mode", "pct_equity")
 
             if sizing_mode == "pct_equity":
-                # Original behavior - allocation is a fraction of portfolio
+                # Use CalculateOrderQuantity + MarketOrder instead of SetHoldings
+                # This ensures small orders are executed rather than silently skipped
                 allocation = action.get("allocation", 0.95)
-                self.SetHoldings(self.symbol, allocation)
+                quantity = self.CalculateOrderQuantity(self.symbol, allocation)
+                if quantity != 0:
+                    self.MarketOrder(self.symbol, quantity)
+                else:
+                    self.Log(f"⚠️ Order quantity is zero for allocation={allocation}, skipping order")
 
             elif sizing_mode == "fixed_usd":
-                # Fixed USD amount - convert to quantity at current price
+                # Fixed USD amount - convert to portfolio allocation
+                # We use CalculateOrderQuantity to ensure LEAN handles the order properly
                 fixed_usd = action.get("fixed_usd", 1000.0)
-                price = self.Securities[self.symbol].Price
-                if price > 0:
-                    quantity = fixed_usd / price
-                    self.MarketOrder(self.symbol, quantity)
-                    self.Log(f"   Fixed USD: ${abs(fixed_usd):.2f} -> {abs(quantity):.6f} units @ ${price:.2f}")
+                portfolio_value = self.Portfolio.TotalPortfolioValue
+                if portfolio_value > 0:
+                    allocation = fixed_usd / portfolio_value
+                    quantity = self.CalculateOrderQuantity(self.symbol, allocation)
+                    if quantity != 0:
+                        self.MarketOrder(self.symbol, quantity)
+                        price = self.Securities[self.symbol].Price
+                        self.Log(f"   Fixed USD: ${abs(fixed_usd):.2f} -> {abs(quantity):.6f} units @ ${price:.2f}")
+                    else:
+                        self.Log(f"⚠️ Order quantity is zero for fixed_usd=${fixed_usd}, skipping order")
                 else:
-                    self.Log(f"⚠️ Cannot execute fixed_usd: price is {price}")
+                    self.Log(f"⚠️ Cannot execute fixed_usd: portfolio value is {portfolio_value}")
 
             elif sizing_mode == "fixed_units":
-                # Fixed number of units - use directly
+                # Fixed number of units - use CalculateOrderQuantity for proper handling
                 fixed_units = action.get("fixed_units", 1.0)
-                self.MarketOrder(self.symbol, fixed_units)
-                self.Log(f"   Fixed units: {abs(fixed_units):.6f}")
+                price = float(bar.Close) if bar else self.Securities[self.symbol].Price
+                if price > 0:
+                    portfolio_value = self.Portfolio.TotalPortfolioValue
+                    if portfolio_value > 0:
+                        allocation = (fixed_units * price) / portfolio_value
+                        quantity = self.CalculateOrderQuantity(self.symbol, allocation)
+                        if quantity != 0:
+                            self.MarketOrder(self.symbol, quantity)
+                            self.Log(f"   Fixed units: {abs(quantity):.6f}")
+                        else:
+                            self.Log(f"⚠️ Order quantity is zero for fixed_units, skipping order")
+                    else:
+                        self.Log(f"⚠️ Cannot execute fixed_units: portfolio value is {portfolio_value}")
+                else:
+                    self.Log(f"⚠️ Cannot execute fixed_units: price is {price}")
 
             else:
                 self.Log(f"⚠️ Unknown sizing_mode: {sizing_mode}")
@@ -2017,7 +2077,10 @@ class StrategyRuntime(QCAlgorithm):
 
         elif action_type == "market_order":
             quantity = action.get("quantity", 0)
-            self.MarketOrder(self.symbol, quantity)
+            if quantity != 0:
+                self.MarketOrder(self.symbol, quantity)
+            else:
+                self.Log(f"⚠️ Order quantity is zero for market_order, skipping order")
 
         else:
             self.Log(f"⚠️ Unknown action type: {action_type}")
