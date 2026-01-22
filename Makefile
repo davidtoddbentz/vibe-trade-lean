@@ -1,4 +1,4 @@
-.PHONY: build test test-local test-backtest test-synthetic clean help prepare-packages
+.PHONY: build test test-unit test-e2e test-local test-backtest test-synthetic test-pubsub clean help prepare-packages
 
 IMAGE_NAME ?= vibe-trade-lean
 IMAGE_TAG ?= latest
@@ -9,15 +9,18 @@ TEST_SYMBOL ?= BTC-USD
 help:
 	@echo "Available targets:"
 	@echo "  build           - Build the custom LEAN Docker image (includes vibe-trade packages)"
-	@echo "  test-synthetic  - Run end-to-end test with synthetic data (recommended)"
-	@echo "  test-backtest   - Run backtest with custom strategy IR"
+	@echo "  test            - Run unit tests (no credentials needed, fast)"
+	@echo "  test-unit       - Run unit tests only (alias for test)"
+	@echo "  test-e2e        - Run E2E tests with Docker (no credentials needed)"
+	@echo "  test-synthetic  - Run end-to-end test with synthetic data (no credentials needed)"
+	@echo "  test-backtest   - Run backtest with custom strategy IR (no credentials needed)"
 	@echo "  test-local      - Run test with local Pub/Sub emulator (no credentials needed)"
-	@echo "  test            - Run integration test with production Pub/Sub (requires GCP credentials)"
+	@echo "  test-pubsub     - Run integration test with production Pub/Sub (requires GCP credentials)"
 	@echo "  clean           - Remove built image and temporary files"
 	@echo ""
-	@echo "Environment variables (for test):"
-	@echo "  GOOGLE_CLOUD_PROJECT          - GCP project ID (required for test)"
-	@echo "  GOOGLE_APPLICATION_CREDENTIALS - Path to service account JSON (required for test)"
+	@echo "Environment variables (for test-pubsub):"
+	@echo "  GOOGLE_CLOUD_PROJECT          - GCP project ID (required)"
+	@echo "  GOOGLE_APPLICATION_CREDENTIALS - Path to service account JSON (required)"
 	@echo "  PUBSUB_TEST_SYMBOL            - Symbol to test (default: BTC-USD)"
 	@echo "  PUBSUB_TEST_SUBSCRIPTION      - Subscription name (default: test_local)"
 	@echo "  TEST_TIMEOUT                  - Test timeout in seconds (default: 60)"
@@ -50,8 +53,21 @@ build: prepare-packages
 	@rm -rf packages
 	@echo "✅ Build complete: $(FULL_IMAGE)"
 
-test: build
-	@echo "🧪 Testing PubSubDataQueueHandler"
+# Default test target - runs unit tests (no credentials needed)
+test: test-unit
+
+test-unit:
+	@echo "🧪 Running unit tests"
+	uv run pytest tests/ -v
+
+# E2E tests - run LEAN strategy tests with Docker
+test-e2e: build
+	@echo "🧪 Running E2E tests with Docker"
+	uv run pytest test/test_e2e.py test/test_lean_strategies.py -v
+
+# Production Pub/Sub test - requires GCP credentials
+test-pubsub: build
+	@echo "🧪 Testing PubSubDataQueueHandler (requires GCP credentials)"
 	@echo ""
 	@if [ -z "$(GOOGLE_CLOUD_PROJECT)" ]; then \
 		echo "❌ Error: GOOGLE_CLOUD_PROJECT not set"; \

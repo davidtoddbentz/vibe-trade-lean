@@ -441,7 +441,7 @@ def _run_lean(
     # Log LEAN output for debugging
     if result.stdout:
         for line in result.stdout.split("\n"):
-            if "[COSTS]" in line or "Trading costs" in line:
+            if "[COSTS]" in line or "Trading costs" in line or "[DEBUG]" in line or "Debug:" in line:
                 logger.info(f"LEAN: {line}")
 
     if result.returncode != 0:
