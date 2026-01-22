@@ -590,9 +590,19 @@ class StrategyRuntime(QCAlgorithm):
         if drawdown > self.max_drawdown:
             self.max_drawdown = drawdown
 
-        # Sample equity curve (every 60 bars ~= hourly for minute data)
-        # Note: bar_count is 0-indexed at this point
-        if self.bar_count == 0 or self.bar_count % 60 == 0:
+        # Sample equity curve based on resolution
+        # For minute data: every 60 bars (~hourly)
+        # For hourly data: every bar
+        # For daily data: every bar
+        # Target: ~100-200 points for a typical backtest
+        if self.resolution == Resolution.Minute:
+            sample_interval = 60  # Every 60 minutes = hourly
+        elif self.resolution == Resolution.Hour:
+            sample_interval = 1   # Every hour
+        else:
+            sample_interval = 1   # Daily or other: every bar
+
+        if self.bar_count == 0 or self.bar_count % sample_interval == 0:
             self.equity_curve.append({
                 "time": str(self.Time),
                 "equity": float(equity),
