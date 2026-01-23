@@ -285,9 +285,10 @@ class StrategyRuntime(QCAlgorithm):
         self.on_bar_invested_ops = self.ir.get("on_bar_invested", [])
         self.on_bar_ops = self.ir.get("on_bar", [])
 
-        # Trade tracking for output
-        self.trades = []  # List of completed trades
-        self.current_trade = None  # Active trade
+        # Trade tracking for output (lot-based for accumulation support)
+        self.trades = []  # List of completed trades/lots
+        self.current_lots = []  # Active lots (supports accumulation)
+        self.last_entry_bar = -999  # For min_bars_between tracking
         self.equity_curve = []  # Portfolio value over time
         self.peak_equity = float(initial_cash_str) if initial_cash_str else 100000
         self.max_drawdown = 0.0
@@ -569,6 +570,9 @@ class StrategyRuntime(QCAlgorithm):
         if is_invested:
             self._run_on_bar_invested(bar)
             self._evaluate_exits(bar)
+            # Check if accumulation is allowed (re-entry while invested)
+            if self._can_accumulate():
+                self._evaluate_entry(bar)
         else:
             # Check entry
             self._evaluate_entry(bar)
@@ -667,8 +671,46 @@ class StrategyRuntime(QCAlgorithm):
 
         return scale
 
+
+    def _can_accumulate(self) -> bool:
+        """Check if position policy allows another entry while invested.
+
+        Returns True if:
+        - mode is "accumulate" or "scale_in"
+        - max_positions limit not reached
+        - min_bars_between cooldown has passed
+        """
+        if not self.entry_rule:
+            return False
+
+        action = self.entry_rule.get("action", {})
+        policy = action.get("position_policy") or {}
+        mode = policy.get("mode", "single")
+
+        # Single mode: no accumulation allowed
+        if mode == "single":
+            return False
+
+        # Check max_positions limit
+        max_pos = policy.get("max_positions")
+        if max_pos is not None and len(self.current_lots) >= max_pos:
+            return False
+
+        # Check min_bars_between cooldown
+        min_bars = policy.get("min_bars_between")
+        if min_bars is not None and (self.bar_count - self.last_entry_bar) < min_bars:
+            return False
+
+        return True
+
     def _evaluate_entry(self, bar):
-        """Evaluate entry rule and execute if conditions met."""
+        """Evaluate entry rule and execute if conditions met.
+
+        Supports accumulation via position_policy:
+        - single: One position at a time (default)
+        - accumulate: Allow repeated entries of same size
+        - scale_in: Allow repeated entries with diminishing size
+        """
         if not self.entry_rule:
             return
 
@@ -676,6 +718,26 @@ class StrategyRuntime(QCAlgorithm):
         result = self._evaluate_condition(condition, bar)
         if result:
             action = self.entry_rule.get("action", {}).copy()  # Copy to modify
+
+            # Get position before executing to calculate lot quantity
+            qty_before = float(self.Portfolio[self.symbol].Quantity)
+
+            # Apply scale_in factor if in scale_in mode with existing lots
+            policy = action.get("position_policy") or {}
+            mode = policy.get("mode", "single")
+            if mode == "scale_in" and self.current_lots:
+                scale_factor = policy.get("scale_factor", 0.5)
+                num_existing = len(self.current_lots)
+                # Apply exponential scaling: first entry full, second * scale, third * scale^2, etc.
+                scaling = scale_factor ** num_existing
+                if action.get("sizing_mode") == "pct_equity":
+                    original_allocation = action.get("allocation", 0.95)
+                    action["allocation"] = original_allocation * scaling
+                    self.Log(f"   Scale-in factor: {scaling:.2f} (lot #{num_existing + 1})")
+                elif action.get("sizing_mode") == "fixed_usd":
+                    original_usd = action.get("fixed_usd", 1000.0)
+                    action["fixed_usd"] = original_usd * scaling
+                    self.Log(f"   Scale-in: ${abs(original_usd):.2f} -> ${abs(action['fixed_usd']):.2f}")
 
             # Apply overlay scaling to position size
             overlay_scale = self._compute_overlay_scale(bar)
@@ -686,88 +748,109 @@ class StrategyRuntime(QCAlgorithm):
 
             self._execute_action(action, bar)
 
+            # Calculate lot quantity (delta from before)
+            qty_after = float(self.Portfolio[self.symbol].Quantity)
+            lot_quantity = abs(qty_after - qty_before)
+
             # Detect direction from allocation or quantity
             allocation = action.get("allocation", 0.95)
-            quantity = float(self.Portfolio[self.symbol].Quantity)
-            direction = "short" if allocation < 0 or quantity < 0 else "long"
+            direction = "short" if allocation < 0 or qty_after < 0 else "long"
 
-            # Track trade with slippage-adjusted entry price
+            # Track lot with slippage-adjusted entry price
             # For long: buying, so pay more (slippage up)
             # For short: selling, so receive less (slippage down)
             is_buy_entry = (direction == "long")
             entry_price = self._apply_slippage(float(bar.Close), is_buy_entry)
-            entry_value = entry_price * abs(quantity)
+            entry_value = entry_price * lot_quantity
             entry_fee = self._calculate_fee(entry_value)
 
-            self.current_trade = {
+            lot = {
+                "lot_id": len(self.current_lots),  # 0-indexed lot number
                 "symbol": str(self.symbol),
                 "direction": direction,
                 "entry_time": str(self.Time),
                 "entry_price": entry_price,
                 "entry_bar": self.bar_count,  # Bar index where entry occurred
-                "quantity": abs(quantity),  # Store absolute quantity
+                "quantity": lot_quantity,  # Quantity for this lot only
                 "entry_fee": entry_fee,  # Fee paid on entry
             }
+            self.current_lots.append(lot)
+            self.last_entry_bar = self.bar_count  # Track for min_bars_between
 
             # Run on_fill hooks
             for op in self.entry_rule.get("on_fill", []):
                 self._execute_state_op(op, bar)
 
-            self.Log(f"🟢 ENTRY @ ${bar.Close:.2f}")
+            lot_num = len(self.current_lots)
+            if lot_num > 1:
+                self.Log(f"🟢 ENTRY (lot #{lot_num}) @ ${bar.Close:.2f} | qty: {lot_quantity:.6f}")
+            else:
+                self.Log(f"🟢 ENTRY @ ${bar.Close:.2f}")
 
     def _evaluate_exits(self, bar):
-        """Evaluate exit rules in priority order."""
+        """Evaluate exit rules in priority order.
+
+        When exit triggers, closes ALL open lots and calculates PnL for each.
+        """
         # Sort by priority (lower priority number = higher priority)
         sorted_exits = sorted(self.exit_rules, key=lambda x: x.get("priority", 0))
 
         for exit_rule in sorted_exits:
             condition = exit_rule.get("condition")
             if self._evaluate_condition(condition, bar):
-                # Complete trade tracking before executing action
-                if self.current_trade:
-                    entry_price = self.current_trade["entry_price"]
-                    quantity = self.current_trade.get("quantity", 0)
-                    direction = self.current_trade.get("direction", "long")
-                    entry_fee = self.current_trade.get("entry_fee", 0)
+                # Complete lot tracking before executing action
+                if self.current_lots:
+                    exit_reason = exit_rule.get("id", "unknown")
+                    num_lots = len(self.current_lots)
 
-                    # Apply slippage to exit price
-                    # For long exit: selling, so receive less (slippage down)
-                    # For short exit: buying/covering, so pay more (slippage up)
-                    is_buy_exit = (direction == "short")  # Short covers with a buy
-                    exit_price = self._apply_slippage(float(bar.Close), is_buy_exit)
+                    for lot in self.current_lots:
+                        entry_price = lot["entry_price"]
+                        quantity = lot.get("quantity", 0)
+                        direction = lot.get("direction", "long")
+                        entry_fee = lot.get("entry_fee", 0)
 
-                    # Calculate exit fee
-                    exit_value = exit_price * quantity
-                    exit_fee = self._calculate_fee(exit_value)
-                    total_fees = entry_fee + exit_fee
+                        # Apply slippage to exit price
+                        # For long exit: selling, so receive less (slippage down)
+                        # For short exit: buying/covering, so pay more (slippage up)
+                        is_buy_exit = (direction == "short")  # Short covers with a buy
+                        exit_price = self._apply_slippage(float(bar.Close), is_buy_exit)
 
-                    # PnL calculation: short profits when price drops
-                    # Subtract total fees from PnL
-                    if direction == "short":
-                        gross_pnl = (entry_price - exit_price) * quantity
-                    else:
-                        gross_pnl = (exit_price - entry_price) * quantity
+                        # Calculate exit fee
+                        exit_value = exit_price * quantity
+                        exit_fee = self._calculate_fee(exit_value)
+                        total_fees = entry_fee + exit_fee
 
-                    pnl = gross_pnl - total_fees
-                    # Calculate pnl_pct based on entry value
-                    entry_value = entry_price * quantity
-                    pnl_pct = (pnl / entry_value) * 100 if entry_value > 0 else 0
+                        # PnL calculation: short profits when price drops
+                        # Subtract total fees from PnL
+                        if direction == "short":
+                            gross_pnl = (entry_price - exit_price) * quantity
+                        else:
+                            gross_pnl = (exit_price - entry_price) * quantity
 
-                    self.current_trade["exit_time"] = str(self.Time)
-                    self.current_trade["exit_price"] = exit_price
-                    self.current_trade["exit_bar"] = self.bar_count
-                    self.current_trade["pnl"] = pnl
-                    self.current_trade["pnl_percent"] = pnl_pct
-                    self.current_trade["exit_fee"] = exit_fee
-                    self.current_trade["total_fees"] = total_fees
-                    self.current_trade["exit_reason"] = exit_rule.get("id", "unknown")
+                        pnl = gross_pnl - total_fees
+                        # Calculate pnl_pct based on entry value
+                        entry_value = entry_price * quantity
+                        pnl_pct = (pnl / entry_value) * 100 if entry_value > 0 else 0
 
-                    self.trades.append(self.current_trade)
-                    self.current_trade = None
+                        lot["exit_time"] = str(self.Time)
+                        lot["exit_price"] = exit_price
+                        lot["exit_bar"] = self.bar_count
+                        lot["pnl"] = pnl
+                        lot["pnl_percent"] = pnl_pct
+                        lot["exit_fee"] = exit_fee
+                        lot["total_fees"] = total_fees
+                        lot["exit_reason"] = exit_reason
+
+                        self.trades.append(lot)
+
+                    self.current_lots = []
 
                 action = exit_rule.get("action", {})
                 self._execute_action(action)
-                self.Log(f"🔴 EXIT ({exit_rule.get('id', 'unknown')}) @ ${bar.Close:.2f}")
+                if num_lots > 1:
+                    self.Log(f"🔴 EXIT ({exit_rule.get('id', 'unknown')}) @ ${bar.Close:.2f} | closed {num_lots} lots")
+                else:
+                    self.Log(f"🔴 EXIT ({exit_rule.get('id', 'unknown')}) @ ${bar.Close:.2f}")
                 break  # Only execute first matching exit
 
     def _run_on_bar_invested(self, bar):
@@ -2130,51 +2213,57 @@ class StrategyRuntime(QCAlgorithm):
 
     def OnEndOfAlgorithm(self):
         """Called when algorithm ends."""
-        # Close any open position and record as trade
-        if self.current_trade and self.Portfolio.Invested:
-            # Get last known price and apply slippage
+        # Close any open lots and record as trades
+        if self.current_lots and self.Portfolio.Invested:
             raw_price = float(self.Portfolio[self.symbol].Price)
-            entry_price = self.current_trade["entry_price"]
-            quantity = self.current_trade.get("quantity", 0)
-            direction = self.current_trade.get("direction", "long")
-            entry_fee = self.current_trade.get("entry_fee", 0)
+            num_lots = len(self.current_lots)
 
-            # Apply slippage to exit price
-            # For long exit: selling, so receive less (slippage down)
-            # For short exit: buying/covering, so pay more (slippage up)
-            is_buy_exit = (direction == "short")  # Short covers with a buy
-            last_price = self._apply_slippage(raw_price, is_buy_exit)
+            for lot in self.current_lots:
+                entry_price = lot["entry_price"]
+                quantity = lot.get("quantity", 0)
+                direction = lot.get("direction", "long")
+                entry_fee = lot.get("entry_fee", 0)
 
-            # Calculate exit fee
-            exit_value = last_price * quantity
-            exit_fee = self._calculate_fee(exit_value)
-            total_fees = entry_fee + exit_fee
+                # Apply slippage to exit price
+                # For long exit: selling, so receive less (slippage down)
+                # For short exit: buying/covering, so pay more (slippage up)
+                is_buy_exit = (direction == "short")  # Short covers with a buy
+                last_price = self._apply_slippage(raw_price, is_buy_exit)
 
-            # PnL calculation: short profits when price drops
-            # Subtract total fees from PnL
-            if direction == "short":
-                gross_pnl = (entry_price - last_price) * quantity
+                # Calculate exit fee
+                exit_value = last_price * quantity
+                exit_fee = self._calculate_fee(exit_value)
+                total_fees = entry_fee + exit_fee
+
+                # PnL calculation: short profits when price drops
+                # Subtract total fees from PnL
+                if direction == "short":
+                    gross_pnl = (entry_price - last_price) * quantity
+                else:
+                    gross_pnl = (last_price - entry_price) * quantity
+
+                pnl = gross_pnl - total_fees
+                # Calculate pnl_pct based on entry value
+                entry_value = entry_price * quantity
+                pnl_pct = (pnl / entry_value) * 100 if entry_value > 0 else 0
+
+                lot["exit_time"] = str(self.Time)
+                lot["exit_price"] = last_price
+                # bar_count has been incremented past the last bar, so use -1
+                lot["exit_bar"] = self.bar_count - 1
+                lot["pnl"] = pnl
+                lot["pnl_percent"] = pnl_pct
+                lot["exit_fee"] = exit_fee
+                lot["total_fees"] = total_fees
+                lot["exit_reason"] = "end_of_backtest"
+
+                self.trades.append(lot)
+
+            self.current_lots = []
+            if num_lots > 1:
+                self.Log(f"📊 Closed {num_lots} open lots at end: ${last_price:.2f}")
             else:
-                gross_pnl = (last_price - entry_price) * quantity
-
-            pnl = gross_pnl - total_fees
-            # Calculate pnl_pct based on entry value
-            entry_value = entry_price * quantity
-            pnl_pct = (pnl / entry_value) * 100 if entry_value > 0 else 0
-
-            self.current_trade["exit_time"] = str(self.Time)
-            self.current_trade["exit_price"] = last_price
-            # bar_count has been incremented past the last bar, so use -1
-            self.current_trade["exit_bar"] = self.bar_count - 1
-            self.current_trade["pnl"] = pnl
-            self.current_trade["pnl_percent"] = pnl_pct
-            self.current_trade["exit_fee"] = exit_fee
-            self.current_trade["total_fees"] = total_fees
-            self.current_trade["exit_reason"] = "end_of_backtest"
-
-            self.trades.append(self.current_trade)
-            self.current_trade = None
-            self.Log(f"📊 Closed open position at end: ${last_price:.2f}")
+                self.Log(f"📊 Closed open position at end: ${last_price:.2f}")
 
         initial_cash = float(self.GetParameter("initial_cash") or 100000)
 
@@ -2231,6 +2320,21 @@ class StrategyRuntime(QCAlgorithm):
 
         # Write structured output to JSON file
         import os
+
+        # Calculate accumulation summary if any lots were used
+        lots_with_id = [t for t in self.trades if t.get("lot_id") is not None]
+        accumulation_summary = None
+        if lots_with_id:
+            total_quantity = sum(t.get("quantity", 0) for t in lots_with_id)
+            total_cost = sum(t.get("entry_price", 0) * t.get("quantity", 0) for t in lots_with_id)
+            avg_entry_price = total_cost / total_quantity if total_quantity > 0 else 0
+            accumulation_summary = {
+                "total_lots": len(lots_with_id),
+                "total_quantity": total_quantity,
+                "total_cost_basis": total_cost,
+                "avg_entry_price": avg_entry_price,
+            }
+
         output = {
             "strategy_id": self.ir.get("strategy_id", "unknown"),
             "strategy_name": self.ir.get("strategy_name", "Unknown"),
@@ -2251,6 +2355,10 @@ class StrategyRuntime(QCAlgorithm):
             "trades": self.trades,
             "equity_curve": self.equity_curve,
         }
+
+        # Add accumulation summary if present
+        if accumulation_summary:
+            output["accumulation_summary"] = accumulation_summary
 
         # Write to data folder (same location as strategy_ir.json and debug.log)
         output_path = os.path.join(CustomCryptoData.DataFolder, "strategy_output.json")
