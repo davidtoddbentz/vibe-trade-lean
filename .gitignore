@@ -42,6 +42,11 @@ credentials.json
 gcp-credentials.json
 lean-pubsub-key.json
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # Temporary files
 *.bak
 *.orig
