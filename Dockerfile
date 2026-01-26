@@ -6,24 +6,28 @@ FROM quantconnect/lean:latest
 ENV DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER=1
 ENV DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT=1
 
-# Install Python dependencies for Pub/Sub and BigQuery data loading
+# Install Python dependencies for Pub/Sub, BigQuery, and Pydantic
 RUN (python3 -m pip install --no-cache-dir \
         google-cloud-pubsub>=2.18.0 \
         google-cloud-bigquery>=3.0.0 \
+        pydantic>=2.0.0 \
         2>/dev/null || \
      python -m pip install --no-cache-dir \
         google-cloud-pubsub>=2.18.0 \
         google-cloud-bigquery>=3.0.0 \
+        pydantic>=2.0.0 \
         2>/dev/null || \
      pip install --no-cache-dir \
         google-cloud-pubsub>=2.18.0 \
         google-cloud-bigquery>=3.0.0 \
+        pydantic>=2.0.0 \
         2>/dev/null || \
      /usr/bin/python3 -m pip install --no-cache-dir \
         google-cloud-pubsub>=2.18.0 \
         google-cloud-bigquery>=3.0.0 \
+        pydantic>=2.0.0 \
         2>/dev/null) && \
-    echo "✅ Python libraries installed (Pub/Sub, BigQuery)"
+    echo "✅ Python libraries installed (Pub/Sub, BigQuery, Pydantic)"
 
 # Copy vibe-trade packages for strategy execution (optional)
 # Note: The inline evaluator in strategy_runtime.py handles all IR evaluation,

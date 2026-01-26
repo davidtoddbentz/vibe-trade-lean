@@ -79,9 +79,10 @@ class BacktestDataInput(BaseModel):
 
 class BacktestConfig(BaseModel):
     """Configuration for backtest execution."""
-    start_date: str  # YYYY-MM-DD format
+    start_date: str  # YYYY-MM-DD format (LEAN data processing start, may include warmup)
     end_date: str
     initial_cash: float = 100000.0
+    trading_start_date: str | None = None  # User's actual start date (prevents warmup trades)
 
 
 class LEANBacktestRequest(BaseModel):
@@ -118,6 +119,17 @@ class Trade(BaseModel):
     pnl_pct: float | None = None
 
 
+
+class EquityPoint(BaseModel):
+    """Single point on equity curve with full portfolio breakdown."""
+
+    time: str
+    equity: float
+    cash: float
+    holdings: float
+    drawdown: float
+
+
 class LEANBacktestSummary(BaseModel):
     """Summary metrics - matches execution's BacktestSummary model."""
     total_trades: int
@@ -134,7 +146,8 @@ class LEANBacktestResponse(BaseModel):
     status: str  # "success" or "error"
     trades: list[Trade] = []
     summary: LEANBacktestSummary | None = None
-    equity_curve: list[float] | None = None
+    # Full equity curve data with cash/holdings breakdown
+    equity_curve: list[EquityPoint] | list[dict] | None = None
     error: str | None = None
 
 
@@ -241,9 +254,36 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
                 raise FileNotFoundError(f"Required algorithm file not found: {src_file}")
             shutil.copy(src_file, algo_dir / filename)
 
+        # Copy indicators package (registry pattern for indicator creation)
+        # REQUIRED: StrategyRuntime imports from this package
+        indicators_src = ALGO_SRC_DIR / "indicators"
+        if indicators_src.exists():
+            shutil.copytree(indicators_src, algo_dir / "indicators")
+            logger.info(f"Copied indicators package to {algo_dir / 'indicators'}")
+        else:
+            raise FileNotFoundError(
+                f"Required indicators package not found: {indicators_src}. "
+                "StrategyRuntime cannot run without this package."
+            )
+
+        # Copy conditions package (registry pattern for condition evaluation)
+        # REQUIRED: StrategyRuntime imports from this package
+        conditions_src = ALGO_SRC_DIR / "conditions"
+        if conditions_src.exists():
+            shutil.copytree(conditions_src, algo_dir / "conditions")
+            logger.info(f"Copied conditions package to {algo_dir / 'conditions'}")
+        else:
+            raise FileNotFoundError(
+                f"Required conditions package not found: {conditions_src}. "
+                "StrategyRuntime cannot run without this package."
+            )
+
         # Parse dates from config (YYYY-MM-DD format)
         start_date = request.config.start_date.replace("-", "")
         end_date = request.config.end_date.replace("-", "")
+        trading_start_date = None
+        if request.config.trading_start_date:
+            trading_start_date = request.config.trading_start_date.replace("-", "")
 
         # Run LEAN
         lean_result = _run_lean(
@@ -254,6 +294,7 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
             start_date=start_date,
             end_date=end_date,
             initial_cash=request.config.initial_cash,
+            trading_start_date=trading_start_date,
         )
 
         # Capture strategy output
@@ -307,8 +348,8 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
                 max_drawdown_pct=round(strategy_output.get("max_drawdown_pct", 0), 2),
             )
 
-            # Extract equity curve
-            equity_curve = [e.get("equity", initial_cash) for e in strategy_output.get("equity_curve", [])]
+            # Pass through full equity curve data (time, equity, cash, holdings, drawdown)
+            equity_curve = strategy_output.get("equity_curve", [])
 
         return LEANBacktestResponse(
             status="success",
@@ -384,8 +425,20 @@ def _run_lean(
     start_date: str,
     end_date: str,
     initial_cash: float,
+    trading_start_date: str | None = None,
 ) -> dict:
     """Run LEAN backtest."""
+    parameters = {
+        "strategy_ir_path": ir_path,
+        "start_date": start_date,
+        "end_date": end_date,
+        "initial_cash": str(initial_cash),
+        "data_folder": str(data_dir),
+    }
+    # Add trading_start_date if provided (prevents trades during warmup)
+    if trading_start_date:
+        parameters["trading_start_date"] = trading_start_date
+
     config = {
         "environment": "backtesting",
         "algorithm-type-name": "StrategyRuntime",
@@ -393,13 +446,7 @@ def _run_lean(
         "algorithm-location": str(algo_dir / "StrategyRuntime.py"),
         "data-folder": str(data_dir),
         "results-destination-folder": str(results_dir),
-        "parameters": {
-            "strategy_ir_path": ir_path,
-            "start_date": start_date,
-            "end_date": end_date,
-            "initial_cash": str(initial_cash),
-            "data_folder": str(data_dir),
-        },
+        "parameters": parameters,
         "log-handler": "QuantConnect.Logging.CompositeLogHandler",
         "messaging-handler": "QuantConnect.Messaging.Messaging",
         "job-queue-handler": "QuantConnect.Queues.JobQueue",

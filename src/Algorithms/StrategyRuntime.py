@@ -20,37 +20,47 @@ from typed_conditions import (
     TypedGapCondition,
     parse_condition,
 )
+from indicators import (
+    IndicatorCategory,
+    IndicatorResult,
+    create_indicator,
+    update_indicator,
+    is_indicator_ready,
+    resolve_indicator_value,
+)
+from conditions import (
+    CompareOp,
+    evaluate_condition as registry_evaluate_condition,
+)
+
+# =============================================================================
+# Pydantic Availability Check (experimental)
+# =============================================================================
+# Test if Pydantic is available in LEAN's Python environment.
+# If available, we can reuse IR models from vibe-trade-shared.
+# If not, we fall back to dict-based access (current behavior).
+PYDANTIC_AVAILABLE = False
+PYDANTIC_VERSION = None
+try:
+    from pydantic import BaseModel, __version__ as pydantic_version
+    PYDANTIC_AVAILABLE = True
+    PYDANTIC_VERSION = pydantic_version
+
+    # Quick validation test - create a simple model
+    class _TestModel(BaseModel):
+        value: int
+    _test = _TestModel(value=42)
+    assert _test.value == 42, "Pydantic model validation failed"
+except ImportError:
+    pass  # Pydantic not installed, use dict-based access
+except Exception:
+    PYDANTIC_AVAILABLE = False  # Pydantic import failed
 
 
 # =============================================================================
 # IR Types (mirrors src/translator/ir.py for LEAN environment)
 # =============================================================================
-
-
-class CompareOp(str, Enum):
-    """Comparison operators."""
-    LT = "<"
-    LTE = "<="
-    GT = ">"
-    GTE = ">="
-    EQ = "=="
-    NEQ = "!="
-
-    def apply(self, left: float, right: float) -> bool:
-        """Apply the comparison operator."""
-        if self == CompareOp.LT:
-            return left < right
-        elif self == CompareOp.LTE:
-            return left <= right
-        elif self == CompareOp.GT:
-            return left > right
-        elif self == CompareOp.GTE:
-            return left >= right
-        elif self == CompareOp.EQ:
-            return left == right
-        elif self == CompareOp.NEQ:
-            return left != right
-        return False
+# Note: CompareOp is now imported from conditions.registry
 
 
 # =============================================================================
@@ -231,6 +241,23 @@ class StrategyRuntime(QCAlgorithm):
         else:
             self.SetCash(100000)
 
+        # Parse trading_start_date (prevents trades during warmup)
+        # Format: YYYYMMDD
+        trading_start_str = self.GetParameter("trading_start_date")
+        self.trading_start_date = None
+        if trading_start_str:
+            try:
+                from datetime import datetime as dt
+                year = int(trading_start_str[:4])
+                month = int(trading_start_str[4:6])
+                day = int(trading_start_str[6:8])
+                self.trading_start_date = dt(year, month, day)
+                self.Debug(f"trading_start_date: {self.trading_start_date} (trades blocked before this)")
+            except (ValueError, IndexError) as e:
+                self.Debug(f"Failed to parse trading_start_date '{trading_start_str}': {e}")
+        else:
+            self.Debug("No trading_start_date set (warmup trading allowed)")
+
         # Load strategy IR
         ir_json = self.GetParameter("strategy_ir")
         self.Debug(f"strategy_ir parameter: {ir_json}")
@@ -266,11 +293,16 @@ class StrategyRuntime(QCAlgorithm):
         # Configure trading costs (fees and slippage)
         self._configure_trading_costs()
 
-        # Initialize indicators
+        # Initialize indicators - unified registry pattern
+        # Maps indicator_id -> (category, indicator_or_data)
+        self.indicator_registry: dict[str, tuple[IndicatorCategory, Any]] = {}
+
+        # Legacy dicts (for backward compatibility during transition)
         self.indicators = {}
         self.rolling_windows = {}  # For RollingWindow indicators
         self.vol_sma_indicators = {}  # For volume SMA indicators
         self.rolling_minmax = {}  # For rolling min/max trackers
+        self.avwap_trackers = {}  # For AVWAP (anchored VWAP) trackers
         self._create_indicators()
 
         # Initialize state
@@ -297,10 +329,18 @@ class StrategyRuntime(QCAlgorithm):
         # Crossover detection state
         self._cross_prev = {}  # Stores previous (left, right) values per condition
 
+        # Breakout detection state - tracks previous max/min indicator values
+        self._breakout_prev_max = {}  # {ind_id: previous_max_value}
+        self._breakout_prev_min = {}  # {ind_id: previous_min_value}
+
         self.Log("✅ StrategyRuntime initialized")
         self.Log(f"   Strategy: {self.ir.get('strategy_name', 'Unknown')}")
         self.Log(f"   Symbol: {self.symbol}")
         self.Log(f"   Indicators: {len(self.indicators)}")
+        if PYDANTIC_AVAILABLE:
+            self.Log(f"   Pydantic: v{PYDANTIC_VERSION} ✓")
+        else:
+            self.Log("   Pydantic: not available")
 
     def _add_symbol(self, symbol_str: str) -> Symbol:
         """Add symbol using custom data reader for CSV files.
@@ -412,8 +452,9 @@ class StrategyRuntime(QCAlgorithm):
     def _create_indicators(self):
         """Create all indicators defined in the IR.
 
-        Indicators can specify a 'symbol' field to use a different symbol than the primary.
-        This enables multi-symbol strategies (e.g., BTC/ETH correlation).
+        Uses the indicator registry pattern to create indicators, eliminating
+        the large switch statement. Indicators can specify a 'symbol' field
+        to use a different symbol than the primary.
         """
         for ind_def in self.ir.get("indicators", []):
             ind_type = ind_def.get("type")
@@ -422,89 +463,29 @@ class StrategyRuntime(QCAlgorithm):
             # Get symbol for this indicator (defaults to primary symbol)
             ind_symbol = self._get_symbol_obj(ind_def.get("symbol"))
 
-            # All indicators use named resolution parameter to avoid signature issues
-            if ind_type == "EMA":
-                period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.EMA(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "SMA":
-                period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.SMA(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "BB":
-                period = ind_def.get("period", 20)
-                mult = ind_def.get("multiplier", 2.0)
-                self.indicators[ind_id] = self.BB(ind_symbol, period, mult, resolution=self.resolution)
-            elif ind_type == "KC":
-                period = ind_def.get("period", 20)
-                mult = ind_def.get("multiplier", 2.0)
-                self.indicators[ind_id] = self.KCH(ind_symbol, period, mult, resolution=self.resolution)
-            elif ind_type == "ATR":
-                period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.ATR(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "MAX":
-                period = ind_def.get("period", 50)
-                self.indicators[ind_id] = self.MAX(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "MIN":
-                period = ind_def.get("period", 50)
-                self.indicators[ind_id] = self.MIN(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "ROC":
-                period = ind_def.get("period", 1)
-                self.indicators[ind_id] = self.ROC(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "ADX":
-                period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.ADX(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "RSI":
-                period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.RSI(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "MACD":
-                fast = ind_def.get("fast_period", 12)
-                slow = ind_def.get("slow_period", 26)
-                signal = ind_def.get("signal_period", 9)
-                self.indicators[ind_id] = self.MACD(ind_symbol, fast, slow, signal, resolution=self.resolution)
-            elif ind_type == "DC":
-                period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.DCH(ind_symbol, period, resolution=self.resolution)
-            elif ind_type == "VWAP":
-                period = ind_def.get("period", 0)
-                if period == 0:
-                    # Intraday VWAP (resets daily)
-                    self.indicators[ind_id] = self.VWAP(ind_symbol)
+            try:
+                result = create_indicator(ind_def, self, ind_symbol, self.resolution)
+
+                # Store in unified registry
+                if result.indicator is not None:
+                    self.indicator_registry[ind_id] = (result.category, result.indicator)
                 else:
-                    # Rolling VWAP with period
-                    self.indicators[ind_id] = self.VWAP(ind_symbol, period)
-            elif ind_type == "RW":
-                # Rolling window for historical values (e.g., previous close)
-                period = ind_def.get("period", 2)
-                field = ind_def.get("field", "close")
-                # Store as a RollingWindow - handled specially in OnData
-                # Note: symbol stored for multi-symbol support
-                self.rolling_windows[ind_id] = {
-                    "window": RollingWindow[float](period),
-                    "field": field,
-                    "symbol": ind_symbol,
-                }
-            elif ind_type == "VOL_SMA":
-                # Simple Moving Average of volume
-                period = ind_def.get("period", 20)
-                # Use SMA indicator on volume data
-                # Note: symbol stored for multi-symbol support
-                self.vol_sma_indicators[ind_id] = {
-                    "sma": SimpleMovingAverage(period),
-                    "period": period,
-                    "symbol": ind_symbol,
-                }
-            elif ind_type == "RMM":
-                # Rolling Min/Max tracker
-                period = ind_def.get("period", 20)
-                mode = ind_def.get("mode", "min")
-                field = ind_def.get("field", "close")
-                self.rolling_minmax[ind_id] = {
-                    "window": RollingWindow[float](period),
-                    "mode": mode,
-                    "field": field,
-                    "symbol": ind_symbol,
-                }
-            else:
-                self.Log(f"⚠️ Unknown indicator type: {ind_type}")
+                    self.indicator_registry[ind_id] = (result.category, result.data)
+
+                # Also populate legacy dicts for backward compatibility
+                if result.category == IndicatorCategory.LEAN:
+                    self.indicators[ind_id] = result.indicator
+                elif result.category == IndicatorCategory.ROLLING_WINDOW:
+                    self.rolling_windows[ind_id] = result.data
+                elif result.category == IndicatorCategory.VOL_SMA:
+                    self.vol_sma_indicators[ind_id] = result.data
+                elif result.category == IndicatorCategory.ROLLING_MINMAX:
+                    self.rolling_minmax[ind_id] = result.data
+                elif result.category == IndicatorCategory.AVWAP:
+                    self.avwap_trackers[ind_id] = result.data
+
+            except ValueError as e:
+                self.Log(f"⚠️ {e}")
 
     def _initialize_state(self):
         """Initialize state variables from IR."""
@@ -521,33 +502,11 @@ class StrategyRuntime(QCAlgorithm):
 
         bar = data[self.symbol]
 
-        # Update rolling windows before checking indicators
-        for rw_id, rw_data in self.rolling_windows.items():
-            field = rw_data["field"]
-            if field == "close":
-                rw_data["window"].Add(bar.Close)
-            elif field == "open":
-                rw_data["window"].Add(bar.Open)
-            elif field == "high":
-                rw_data["window"].Add(bar.High)
-            elif field == "low":
-                rw_data["window"].Add(bar.Low)
-
-        # Update volume SMA indicators
-        for vol_id, vol_data in self.vol_sma_indicators.items():
-            vol_data["sma"].Update(self.Time, float(bar.Volume))
-
-        # Update rolling min/max trackers
-        for rmm_id, rmm_data in self.rolling_minmax.items():
-            field = rmm_data["field"]
-            if field == "close":
-                rmm_data["window"].Add(bar.Close)
-            elif field == "open":
-                rmm_data["window"].Add(bar.Open)
-            elif field == "high":
-                rmm_data["window"].Add(bar.High)
-            elif field == "low":
-                rmm_data["window"].Add(bar.Low)
+        # Update all custom indicators using the registry
+        # (LEAN indicators are auto-updated by the framework)
+        for ind_id, (category, indicator_or_data) in self.indicator_registry.items():
+            if category != IndicatorCategory.LEAN:
+                update_indicator(category, indicator_or_data, bar, self.Time)
 
         # Wait for all indicators to be ready
         if not self._indicators_ready():
@@ -562,6 +521,13 @@ class StrategyRuntime(QCAlgorithm):
 
         # Track equity curve (every bar)
         self._track_equity(bar)
+
+        # Skip trading during warmup period (before user's trading_start_date)
+        # This prevents trades from occurring before the user's requested start date
+        # while still allowing indicators to warm up and state to be tracked
+        if self.trading_start_date and self.Time < self.trading_start_date:
+            self.bar_count += 1
+            return
 
         # Check position state
         is_invested = self.Portfolio[self.symbol].Invested
@@ -616,21 +582,9 @@ class StrategyRuntime(QCAlgorithm):
             })
 
     def _indicators_ready(self) -> bool:
-        """Check if all indicators are ready."""
-        for ind in self.indicators.values():
-            if not ind.IsReady:
-                return False
-        # Also check rolling windows
-        for rw_data in self.rolling_windows.values():
-            if not rw_data["window"].IsReady:
-                return False
-        # Check volume SMA indicators
-        for vol_data in self.vol_sma_indicators.values():
-            if not vol_data["sma"].IsReady:
-                return False
-        # Check rolling min/max
-        for rmm_data in self.rolling_minmax.values():
-            if not rmm_data["window"].IsReady:
+        """Check if all indicators are ready using the unified registry."""
+        for ind_id, (category, indicator_or_data) in self.indicator_registry.items():
+            if not is_indicator_ready(category, indicator_or_data):
                 return False
         return True
 
@@ -864,92 +818,8 @@ class StrategyRuntime(QCAlgorithm):
             self._execute_state_op(op, bar)
 
     def _evaluate_condition(self, condition: dict, bar) -> bool:
-        """Evaluate a condition from IR."""
-        if not condition:
-            return True
-
-        cond_type = condition.get("type")
-
-        if cond_type == "compare":
-            left_val = self._resolve_value(condition.get("left"), bar)
-            right_val = self._resolve_value(condition.get("right"), bar)
-            op_str = condition.get("op")
-            op = CompareOp(op_str)
-            return op.apply(left_val, right_val)
-
-        elif cond_type == "allOf":
-            for sub in condition.get("conditions", []):
-                if not self._evaluate_condition(sub, bar):
-                    return False
-            return True
-
-        elif cond_type == "anyOf":
-            for sub in condition.get("conditions", []):
-                if self._evaluate_condition(sub, bar):
-                    return True
-            return False
-
-        elif cond_type == "not":
-            inner = condition.get("condition")
-            return not self._evaluate_condition(inner, bar)
-
-        elif cond_type == "regime":
-            # Handle regime conditions by mapping to indicator comparisons
-            return self._evaluate_regime(condition, bar)
-
-        elif cond_type == "cross":
-            return self._evaluate_cross(condition, bar)
-
-        elif cond_type == "squeeze":
-            return self._evaluate_squeeze(condition, bar)
-
-        elif cond_type == "breakout":
-            # Typed BreakoutCondition - delegate to breakout evaluator
-            return self._evaluate_breakout(condition, bar)
-
-        elif cond_type == "spread":
-            # Typed SpreadCondition - multi-symbol spread/ratio comparison
-            return self._evaluate_spread(condition, bar)
-
-        elif cond_type == "intermarket":
-            # Typed IntermarketCondition - leader/follower trigger
-            return self._evaluate_intermarket(condition, bar)
-
-        elif cond_type == "time_filter":
-            return self._evaluate_time_filter(condition, bar)
-
-        elif cond_type == "state_condition":
-            return self._evaluate_state_condition(condition, bar)
-
-        elif cond_type == "gap":
-            return self._evaluate_gap(condition, bar)
-
-        elif cond_type == "trailing_breakout":
-            return self._evaluate_trailing_breakout(condition, bar)
-
-        elif cond_type == "trailing_state":
-            return self._evaluate_trailing_state(condition, bar)
-
-        elif cond_type == "sequence":
-            return self._evaluate_sequence(condition, bar)
-
-        elif cond_type == "event_window":
-            return self._evaluate_event_window(condition, bar)
-
-        elif cond_type == "multi_leader_intermarket":
-            return self._evaluate_multi_leader_intermarket(condition, bar)
-
-        elif cond_type == "liquidity_sweep":
-            return self._evaluate_liquidity_sweep_typed(condition, bar)
-
-        elif cond_type == "flag_pattern":
-            return self._evaluate_flag_pattern_typed(condition, bar)
-
-        elif cond_type == "pennant_pattern":
-            return self._evaluate_pennant_pattern_typed(condition, bar)
-
-        else:
-            raise RuntimeError(f"Unimplemented condition type: {cond_type}")
+        """Evaluate a condition from IR using the condition registry."""
+        return registry_evaluate_condition(condition, bar, self)
 
     def _evaluate_regime(self, regime: dict, bar) -> bool:
         """Evaluate a regime condition."""
@@ -1092,26 +962,45 @@ class StrategyRuntime(QCAlgorithm):
             return False
 
     def _evaluate_breakout(self, condition: dict, bar) -> bool:
-        """Evaluate breakout condition (N-bar high/low breakout)."""
+        """Evaluate breakout condition (N-bar high/low breakout).
+
+        A breakout occurs when the current bar's close exceeds the PREVIOUS N-bar high/low.
+        LEAN's indicators are updated before OnData, so we track previous values ourselves.
+        """
         typed = TypedBreakoutCondition.from_dict(condition)
 
         # Get rolling max/min indicators
-        max_ind = self.indicators.get(f"max_{typed.lookback_bars}") or self.indicators.get("max_50")
-        min_ind = self.indicators.get(f"min_{typed.lookback_bars}") or self.indicators.get("min_50")
+        max_id = f"max_{typed.lookback_bars}"
+        min_id = f"min_{typed.lookback_bars}"
+        max_ind = self.indicators.get(max_id) or self.indicators.get("max_50")
+        min_ind = self.indicators.get(min_id) or self.indicators.get("min_50")
 
         if not max_ind or not min_ind:
             return False
 
-        high_level = max_ind.Current.Value
-        low_level = min_ind.Current.Value
+        # Get current indicator values
+        current_max = max_ind.Current.Value
+        current_min = min_ind.Current.Value
 
-        # Apply buffer
+        # Get previous indicator values (from before this bar)
+        # On first bar, use current values (no breakout possible)
+        prev_max = self._breakout_prev_max.get(max_id, current_max)
+        prev_min = self._breakout_prev_min.get(min_id, current_min)
+
+        # Update stored values for next bar (AFTER we use them)
+        self._breakout_prev_max[max_id] = current_max
+        self._breakout_prev_min[min_id] = current_min
+
+        # Apply buffer to PREVIOUS levels
         buffer_mult = 1 + (typed.buffer_bps / 10000)
-        high_level *= buffer_mult
-        low_level /= buffer_mult
+        high_level = prev_max * buffer_mult
+        low_level = prev_min / buffer_mult
 
-        # Check for breakout
-        return bar.Close > high_level or bar.Close < low_level
+        # Check for breakout against PREVIOUS levels
+        is_high_breakout = bar.Close > high_level
+        is_low_breakout = bar.Close < low_level
+
+        return is_high_breakout or is_low_breakout
 
     def _evaluate_spread(self, condition: dict, bar) -> bool:
         """Evaluate spread condition (multi-symbol ratio/difference).
@@ -1162,19 +1051,68 @@ class StrategyRuntime(QCAlgorithm):
         """Evaluate intermarket condition (leader/follower trigger).
 
         Monitors leader symbol and triggers based on its movement.
-        Requires multi-symbol data subscription.
+        For single-symbol mode (leader == follower), uses own symbol's data.
         """
         leader_symbol = condition.get("leader_symbol")
+        follower_symbol = condition.get("follower_symbol")
         trigger_feature = condition.get("trigger_feature", "ret_pct")
         trigger_threshold = condition.get("trigger_threshold", 1.0)
         window_bars = condition.get("window_bars", 20)
+        direction = condition.get("direction", "same")
 
-        # Note: This is a placeholder - actual multi-symbol implementation
-        # requires LEAN multi-symbol data handling
-        # Would need leader symbol's price data
+        # For single-symbol tests (leader == follower), use own data
+        is_single_symbol = (leader_symbol == follower_symbol or
+                           leader_symbol == str(self.symbol) or
+                           not leader_symbol)
 
-        # Placeholder: return False until multi-symbol support is implemented
-        self.Log(f"⚠️ IntermarketCondition not fully implemented: {leader_symbol}")
+        if trigger_feature == "ret_pct":
+            # Use ROC indicator if available, otherwise calculate from rolling window
+            roc_ind = self.indicators.get("roc") or self.indicators.get(f"roc_{window_bars}")
+
+            if roc_ind:
+                roc_value = roc_ind.Current.Value * 100  # Convert to percentage
+            else:
+                # Calculate from close prices
+                close_rw = self.rolling_windows.get("close") or self.rolling_windows.get("prev_close")
+                if close_rw and close_rw["window"].IsReady:
+                    closes = list(close_rw["window"])
+                    if len(closes) > window_bars:
+                        old_close = closes[window_bars]
+                        current_close = bar.Close
+                        if old_close != 0:
+                            roc_value = ((current_close - old_close) / old_close) * 100
+                        else:
+                            return False
+                    else:
+                        return False
+                else:
+                    # Fallback: track state ourselves
+                    state_key = f"intermarket_closes_{leader_symbol}"
+                    closes_list = self.state.get(state_key, [])
+                    closes_list.append(bar.Close)
+                    if len(closes_list) > window_bars + 1:
+                        closes_list = closes_list[-(window_bars + 1):]
+                    self.state[state_key] = closes_list
+
+                    if len(closes_list) > window_bars:
+                        old_close = closes_list[0]
+                        current_close = bar.Close
+                        if old_close != 0:
+                            roc_value = ((current_close - old_close) / old_close) * 100
+                        else:
+                            return False
+                    else:
+                        return False
+
+            # Check if threshold crossed
+            if direction == "same":
+                # Long on leader up, short on leader down
+                return roc_value > trigger_threshold or roc_value < -trigger_threshold
+            else:  # opposite
+                return roc_value > trigger_threshold or roc_value < -trigger_threshold
+
+        # Other trigger features not implemented yet
+        self.Log(f"⚠️ IntermarketCondition trigger_feature '{trigger_feature}' not implemented")
         return False
 
     def _evaluate_squeeze(self, condition: dict, bar) -> bool:
@@ -1376,9 +1314,12 @@ class StrategyRuntime(QCAlgorithm):
         band_edge = condition.get("band_edge", "upper")
         trigger_direction = condition.get("trigger_direction", "above")
 
-        # Get the band indicator
-        band_id = f"{band_type}_{band_length}"
-        band_ind = self.indicators.get(band_id) or self.indicators.get("bb")
+        # Get the band indicator - translate band_type to indicator ID prefix
+        # band_type: "bollinger" -> "bb", "keltner" -> "kc", "donchian" -> "dc"
+        band_prefix_map = {"bollinger": "bb", "keltner": "kc", "donchian": "dc"}
+        band_prefix = band_prefix_map.get(band_type, band_type)
+        band_id = f"{band_prefix}_{band_length}"
+        band_ind = self.indicators.get(band_id) or self.indicators.get(band_prefix) or self.indicators.get("bb")
 
         if not band_ind:
             self.Log(f"⚠️ No band indicator found for trailing_breakout: {band_id}")
@@ -1836,67 +1777,53 @@ class StrategyRuntime(QCAlgorithm):
         elif val_type == "indicator":
             ind_id = value_ref.get("indicator_id")
             field = value_ref.get("field")  # Optional field for multi-value indicators
-            # First check regular indicators
-            ind = self.indicators.get(ind_id)
-            if ind:
-                # Handle MACD fields
-                if field == "signal" and hasattr(ind, 'Signal'):
-                    return ind.Signal.Current.Value
-                elif field == "histogram" and hasattr(ind, 'Histogram'):
-                    return ind.Histogram.Current.Value
-                elif field == "macd" and hasattr(ind, 'Fast'):
-                    # MACD line = Fast - Slow internally, but .Current.Value gives us the MACD line
-                    return ind.Current.Value
-                # Default: return the main value
-                return ind.Current.Value
-            # Check volume SMA indicators
-            vol_data = self.vol_sma_indicators.get(ind_id)
-            if vol_data:
-                return vol_data["sma"].Current.Value
-            # Check rolling min/max indicators
-            rmm_data = self.rolling_minmax.get(ind_id)
-            if rmm_data:
-                window = rmm_data["window"]
-                if window.IsReady:
-                    if rmm_data["mode"] == "min":
-                        return min(list(window))
-                    else:  # max
-                        return max(list(window))
-                return 0.0
+
+            # Use unified registry for indicator value resolution
+            registry_entry = self.indicator_registry.get(ind_id)
+            if registry_entry:
+                category, indicator_or_data = registry_entry
+                return resolve_indicator_value(category, indicator_or_data, field)
+
             self.Log(f"⚠️ Unknown indicator: {ind_id}")
             return 0.0
 
         elif val_type == "indicator_band":
             ind_id = value_ref.get("indicator_id")
             band = value_ref.get("band")
-            ind = self.indicators.get(ind_id)
-            if ind:
-                if band == "upper":
-                    return ind.UpperBand.Current.Value
-                elif band == "middle":
-                    return ind.MiddleBand.Current.Value
-                elif band == "lower":
-                    return ind.LowerBand.Current.Value
+            # Band indicators are always LEAN category
+            registry_entry = self.indicator_registry.get(ind_id)
+            if registry_entry:
+                category, ind = registry_entry
+                if category == IndicatorCategory.LEAN and ind:
+                    if band == "upper":
+                        return ind.UpperBand.Current.Value
+                    elif band == "middle":
+                        return ind.MiddleBand.Current.Value
+                    elif band == "lower":
+                        return ind.LowerBand.Current.Value
             return 0.0
 
         elif val_type == "indicator_property":
             ind_id = value_ref.get("indicator_id")
             prop = value_ref.get("property")
-            ind = self.indicators.get(ind_id)
-            if ind:
-                if prop == "StandardDeviation":
-                    # Bollinger Bands have StandardDeviation property
-                    return ind.StandardDeviation.Current.Value
-                elif prop == "BandWidth":
-                    # Band width calculation
-                    if hasattr(ind, 'BandWidth'):
-                        return ind.BandWidth.Current.Value
-                    # Fallback: calculate manually
-                    upper = ind.UpperBand.Current.Value
-                    lower = ind.LowerBand.Current.Value
-                    middle = ind.MiddleBand.Current.Value
-                    if middle != 0:
-                        return (upper - lower) / middle
+            # Property indicators are always LEAN category
+            registry_entry = self.indicator_registry.get(ind_id)
+            if registry_entry:
+                category, ind = registry_entry
+                if category == IndicatorCategory.LEAN and ind:
+                    if prop == "StandardDeviation":
+                        # Bollinger Bands have StandardDeviation property
+                        return ind.StandardDeviation.Current.Value
+                    elif prop == "BandWidth":
+                        # Band width calculation
+                        if hasattr(ind, 'BandWidth'):
+                            return ind.BandWidth.Current.Value
+                        # Fallback: calculate manually
+                        upper = ind.UpperBand.Current.Value
+                        lower = ind.LowerBand.Current.Value
+                        middle = ind.MiddleBand.Current.Value
+                        if middle != 0:
+                            return (upper - lower) / middle
             return 0.0
 
         elif val_type == "price":
@@ -1961,15 +1888,17 @@ class StrategyRuntime(QCAlgorithm):
         """
         lookback_bars = regime.get("lookback_bars", 3)
 
-        # Get the level indicator (set up by translator)
-        level_min = self.rolling_minmax.get("level_min")
-        level_max = self.rolling_minmax.get("level_max")
-
+        # Get the level indicator (set up by translator with id like "rmm_low_N")
+        # Look for rolling_minmax indicators by prefix pattern
         level_value = None
-        if level_min and level_min["window"].IsReady:
-            level_value = min(list(level_min["window"]))
-        elif level_max and level_max["window"].IsReady:
-            level_value = max(list(level_max["window"]))
+        for rmm_id, rmm_data in self.rolling_minmax.items():
+            if rmm_data["window"].IsReady:
+                if rmm_data["mode"] == "min" and (rmm_id.startswith("rmm_low") or rmm_id == "level_min"):
+                    level_value = min(list(rmm_data["window"]))
+                    break
+                elif rmm_data["mode"] == "max" and (rmm_id.startswith("rmm_high") or rmm_id == "level_max"):
+                    level_value = max(list(rmm_data["window"]))
+                    break
 
         if level_value is None:
             return False
@@ -2067,18 +1996,32 @@ class StrategyRuntime(QCAlgorithm):
 
         This handles cases where the translator couldn't fully lower the condition.
         """
-        level_ref = regime.get("value", "")
-        direction = "up" if "_up" in level_ref else "down"
+        level_ref = regime.get("level_reference", "") or regime.get("value", "")
+        direction = regime.get("level_direction", "")
+        if not direction:
+            direction = "up" if "_up" in str(level_ref) or "high" in str(level_ref).lower() else "down"
 
-        # Get dynamic level from indicators
-        level_min = self.rolling_minmax.get("level_min")
-        level_max = self.rolling_minmax.get("level_max")
-
+        # Get dynamic level from indicators - search by prefix pattern
         level_value = None
-        if level_min and level_min["window"].IsReady:
-            level_value = min(list(level_min["window"]))
-        elif level_max and level_max["window"].IsReady:
-            level_value = max(list(level_max["window"]))
+        lookback = regime.get("lookback_bars", 20)
+
+        # Determine which mode based on level_reference
+        want_min = "low" in str(level_ref).lower() or "min" in str(level_ref).lower()
+        want_max = "high" in str(level_ref).lower() or "max" in str(level_ref).lower()
+
+        for rmm_id, rmm_data in self.rolling_minmax.items():
+            if rmm_data["window"].IsReady:
+                if want_min and rmm_data["mode"] == "min":
+                    level_value = min(list(rmm_data["window"]))
+                    break
+                elif want_max and rmm_data["mode"] == "max":
+                    level_value = max(list(rmm_data["window"]))
+                    break
+                elif not want_min and not want_max:
+                    # Default to min for touch scenarios
+                    if rmm_data["mode"] == "min":
+                        level_value = min(list(rmm_data["window"]))
+                        break
 
         if level_value is None:
             return False
