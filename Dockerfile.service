@@ -63,6 +63,7 @@ COPY src/Algorithms/symbols/ /Lean/Algorithm.Python/symbols/
 COPY src/Algorithms/ir/ /Lean/Algorithm.Python/ir/
 COPY src/Algorithms/execution/ /Lean/Algorithm.Python/execution/
 COPY src/Algorithms/initialization/ /Lean/Algorithm.Python/initialization/
+COPY src/Algorithms/state/ /Lean/Algorithm.Python/state/
 COPY src/serve_backtest.py /Lean/
 
 # Create __init__.py for src module
