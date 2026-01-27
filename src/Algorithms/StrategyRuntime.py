@@ -13,37 +13,22 @@ from AlgorithmImports import *
 import json
 from indicators import (
     IndicatorCategory,
-    IndicatorResult,
-    create_indicator,
-    resolve_indicator_value,
     resolve_value as _resolve_value_impl,
-    update_indicator,
     is_indicator_ready,
     create_all_indicators,
     initialize_state_variables,
     check_indicators_ready,
     update_all_indicators,
 )
-from pydantic import TypeAdapter
 from vibe_trade_shared.models.ir import (
     StrategyIR,
-    ValueRef,
-    SetHoldingsAction,
-    LiquidateAction,
-    MarketOrderAction,
     EntryAction,
     ExitAction,
     StateOp,
-    PositionPolicy,
 )
-
-# ValueRef is a type alias (discriminated Union); use TypeAdapter to validate dicts.
-ValueRefAdapter = TypeAdapter(ValueRef)
 from conditions import evaluate_condition as registry_evaluate_condition
-from trades import create_lot, close_lots, close_lots_at_end, calculate_trade_stats, generate_report
+from trades import close_lots, close_lots_at_end, generate_report
 from position import (
-    apply_scale_in,
-    apply_overlay_scale,
     can_accumulate,
     compute_overlay_scale,
     track_equity,
@@ -56,28 +41,12 @@ from execution import execute_action, execute_entry, execute_exit
 from initialization import setup_data_folder, setup_dates, setup_symbols, setup_rules, setup_tracking, setup_trading_costs
 from state import execute_state_op as _execute_state_op_func
 
-# =============================================================================
-# Pydantic Availability Check (experimental)
-# =============================================================================
-# Test if Pydantic is available in LEAN's Python environment.
-# If available, we can reuse IR models from vibe-trade-shared.
-# If not, we fall back to dict-based access (current behavior).
-PYDANTIC_AVAILABLE = False
-PYDANTIC_VERSION = None
+# Pydantic is required - StrategyIR.model_validate() is used
+# If Pydantic is not available, the algorithm will fail at import time
 try:
-    from pydantic import BaseModel, __version__ as pydantic_version
-    PYDANTIC_AVAILABLE = True
-    PYDANTIC_VERSION = pydantic_version
-
-    # Quick validation test - create a simple model
-    class _TestModel(BaseModel):
-        value: int
-    _test = _TestModel(value=42)
-    assert _test.value == 42, "Pydantic model validation failed"
+    from pydantic import __version__ as PYDANTIC_VERSION
 except ImportError:
-    pass  # Pydantic not installed, use dict-based access
-except Exception:
-    PYDANTIC_AVAILABLE = False  # Pydantic import failed
+    PYDANTIC_VERSION = "unknown"
 
 
 # =============================================================================
@@ -293,10 +262,7 @@ class StrategyRuntime(QCAlgorithm):
         self.Log(f"   Strategy: {getattr(self.ir, 'strategy_name', 'Unknown') or 'Unknown'}")
         self.Log(f"   Symbol: {self.symbol}")
         self.Log(f"   Indicators: {len(self.indicators)}")
-        if PYDANTIC_AVAILABLE:
-            self.Log(f"   Pydantic: v{PYDANTIC_VERSION} ✓")
-        else:
-            self.Log("   Pydantic: not available")
+        self.Log(f"   Pydantic: v{PYDANTIC_VERSION} ✓")
 
     def _add_symbol(self, symbol_str: str) -> Symbol:
         """Add symbol using custom data reader for CSV files."""
@@ -569,7 +535,8 @@ class StrategyRuntime(QCAlgorithm):
 
         # Calculate final equity from trade PnLs (includes manual fee calculations)
         # This is more accurate than LEAN's portfolio value which doesn't include our manual fees
-        total_trade_pnl = sum(t.get("pnl", 0.0) for t in self.trades)
+        # All trades have "pnl" set by close_lots()
+        total_trade_pnl = sum(t["pnl"] for t in self.trades)
         final_equity = initial_cash + total_trade_pnl
 
         # Also get LEAN's portfolio value for comparison/logging
@@ -616,12 +583,13 @@ class StrategyRuntime(QCAlgorithm):
         self.Log("")
 
         # Log individual trades
+        # All trades have exit_price, pnl_percent, and exit_reason set by close_lots()
         if self.trades:
             self.Log("TRADE LOG")
             for i, t in enumerate(self.trades):
-                exit_price = t.get("exit_price", 0.0)
-                pnl_pct = t.get("pnl_percent", 0.0)
-                exit_reason = t.get("exit_reason", "N/A")
+                exit_price = t["exit_price"]
+                pnl_pct = t["pnl_percent"]
+                exit_reason = t["exit_reason"]
                 self.Log(f"  #{i+1}: {t['direction'].upper()} @ ${t['entry_price']:.2f} -> ${exit_price:.2f} | P&L: {pnl_pct:+.2f}% | Exit: {exit_reason}")
             self.Log("")
 
