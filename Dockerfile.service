@@ -5,6 +5,9 @@ FROM quantconnect/lean:latest
 ENV DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER=1
 ENV DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT=1
 
+# Install git (needed for Git-based dependencies)
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies including FastAPI/uvicorn for HTTP service
 RUN (python3 -m pip install --no-cache-dir \
         'google-cloud-pubsub>=2.18.0' \
@@ -32,15 +35,34 @@ RUN (python3 -m pip install --no-cache-dir \
         'uvicorn>=0.27.0' 2>/dev/null) && \
     echo "✅ Python dependencies installed"
 
+# Install vibe-trade-shared from Git (required for StrategyRuntime and typed condition evaluators)
+# GITHUB_TOKEN is optional - only needed for private repos
+ARG GITHUB_TOKEN
+RUN if [ -n "$GITHUB_TOKEN" ]; then \
+        git config --global url."https://$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/"; \
+    fi && \
+    pip install --no-cache-dir 'git+https://github.com/davidtoddbentz/vibe-trade-shared.git@main' && \
+    if [ -n "$GITHUB_TOKEN" ]; then \
+        git config --global --unset url."https://$GITHUB_TOKEN@github.com/".insteadOf; \
+    fi && \
+    echo "✅ vibe-trade-shared installed"
+
 # Create directories
 RUN mkdir -p /Lean/src
 
 # Copy Python modules
 COPY src/data/ /Lean/src/data/
 COPY src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/
-COPY src/Algorithms/typed_conditions.py /Lean/Algorithm.Python/
 COPY src/Algorithms/indicators/ /Lean/Algorithm.Python/indicators/
 COPY src/Algorithms/conditions/ /Lean/Algorithm.Python/conditions/
+COPY src/Algorithms/trades/ /Lean/Algorithm.Python/trades/
+COPY src/Algorithms/position/ /Lean/Algorithm.Python/position/
+COPY src/Algorithms/gates/ /Lean/Algorithm.Python/gates/
+COPY src/Algorithms/costs/ /Lean/Algorithm.Python/costs/
+COPY src/Algorithms/symbols/ /Lean/Algorithm.Python/symbols/
+COPY src/Algorithms/ir/ /Lean/Algorithm.Python/ir/
+COPY src/Algorithms/execution/ /Lean/Algorithm.Python/execution/
+COPY src/Algorithms/initialization/ /Lean/Algorithm.Python/initialization/
 COPY src/serve_backtest.py /Lean/
 
 # Create __init__.py for src module

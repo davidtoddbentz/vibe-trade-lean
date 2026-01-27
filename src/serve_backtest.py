@@ -247,36 +247,21 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         # Copy LEAN data files
         _copy_lean_data_files(data_dir)
 
-        # Copy algorithm files to temp directory
-        for filename in ["StrategyRuntime.py", "typed_conditions.py"]:
-            src_file = ALGO_SRC_DIR / filename
-            if not src_file.exists():
-                raise FileNotFoundError(f"Required algorithm file not found: {src_file}")
-            shutil.copy(src_file, algo_dir / filename)
-
-        # Copy indicators package (registry pattern for indicator creation)
-        # REQUIRED: StrategyRuntime imports from this package
-        indicators_src = ALGO_SRC_DIR / "indicators"
-        if indicators_src.exists():
-            shutil.copytree(indicators_src, algo_dir / "indicators")
-            logger.info(f"Copied indicators package to {algo_dir / 'indicators'}")
-        else:
-            raise FileNotFoundError(
-                f"Required indicators package not found: {indicators_src}. "
-                "StrategyRuntime cannot run without this package."
-            )
-
-        # Copy conditions package (registry pattern for condition evaluation)
-        # REQUIRED: StrategyRuntime imports from this package
-        conditions_src = ALGO_SRC_DIR / "conditions"
-        if conditions_src.exists():
-            shutil.copytree(conditions_src, algo_dir / "conditions")
-            logger.info(f"Copied conditions package to {algo_dir / 'conditions'}")
-        else:
-            raise FileNotFoundError(
-                f"Required conditions package not found: {conditions_src}. "
-                "StrategyRuntime cannot run without this package."
-            )
+        # Copy only StrategyRuntime.py to temp directory
+        # All modules (indicators, conditions, trades, etc.) are already in the Docker image
+        # at /Lean/Algorithm.Python/ and will be accessible via PYTHONPATH
+        src_file = ALGO_SRC_DIR / "StrategyRuntime.py"
+        if not src_file.exists():
+            raise FileNotFoundError(f"Required algorithm file not found: {src_file}")
+        shutil.copy(src_file, algo_dir / "StrategyRuntime.py")
+        logger.info(f"Copied StrategyRuntime.py to {algo_dir}")
+        
+        # Verify modules exist in source directory (they should be in Docker image)
+        required_modules = ["indicators", "conditions", "trades", "position", "gates", "costs", "symbols", "ir", "execution", "initialization", "state"]
+        missing_modules = [m for m in required_modules if not (ALGO_SRC_DIR / m).exists()]
+        if missing_modules:
+            logger.warning(f"Missing modules in {ALGO_SRC_DIR}: {missing_modules}")
+            logger.warning("Modules should be in Docker image at /Lean/Algorithm.Python/")
 
         # Parse dates from config (YYYY-MM-DD format)
         start_date = request.config.start_date.replace("-", "")
@@ -470,11 +455,15 @@ def _run_lean(
         "--config", str(config_path),
     ]
 
-    # Set up environment with PYTHONPATH pointing to LEAN's Python modules
+    # Set up environment with PYTHONPATH pointing to:
+    # 1. LEAN's Python modules (/Lean/Launcher/bin/Debug)
+    # 2. Algorithm modules (/Lean/Algorithm.Python) - so StrategyRuntime can import them
     env = os.environ.copy()
     lean_python_path = "/Lean/Launcher/bin/Debug"
+    algo_python_path = "/Lean/Algorithm.Python"
     existing_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{lean_python_path}:{existing_path}" if existing_path else lean_python_path
+    # Add both paths, with algo path first so it takes precedence
+    env["PYTHONPATH"] = f"{algo_python_path}:{lean_python_path}:{existing_path}" if existing_path else f"{algo_python_path}:{lean_python_path}"
 
     result = subprocess.run(
         cmd,

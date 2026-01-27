@@ -1,0 +1,69 @@
+# HTTP Backtest Service — build from workspace root (so vibe-trade-shared is in context).
+# Usage from repo root: docker build -f vibe-trade-lean/Dockerfile.service.workspace -t lean-backtest-service .
+#
+# Required for Phase 6+ (typed ValueRef): StrategyRuntime and resolvers import vibe_trade_shared.
+
+FROM quantconnect/lean:latest
+
+ENV DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER=1
+ENV DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT=1
+
+# Install Python deps
+RUN (python3 -m pip install --no-cache-dir \
+        'google-cloud-pubsub>=2.18.0' \
+        'google-cloud-storage>=2.14.0' \
+        'pyarrow>=14.0.0' \
+        'fastavro>=1.9.0' \
+        'pydantic>=2.0.0' \
+        'fastapi>=0.109.0' \
+        'uvicorn>=0.27.0' 2>/dev/null || \
+     python -m pip install --no-cache-dir \
+        'google-cloud-pubsub>=2.18.0' \
+        'google-cloud-storage>=2.14.0' \
+        'pyarrow>=14.0.0' \
+        'fastavro>=1.9.0' \
+        'pydantic>=2.0.0' \
+        'fastapi>=0.109.0' \
+        'uvicorn>=0.27.0' 2>/dev/null || \
+     pip install --no-cache-dir \
+        'google-cloud-pubsub>=2.18.0' \
+        'google-cloud-storage>=2.14.0' \
+        'pyarrow>=14.0.0' \
+        'fastavro>=1.9.0' \
+        'pydantic>=2.0.0' \
+        'fastapi>=0.109.0' \
+        'uvicorn>=0.27.0' 2>/dev/null) && \
+    echo "✅ Python dependencies installed"
+
+# Install vibe-trade-shared (required for typed ValueRef in resolvers + StrategyRuntime)
+COPY vibe-trade-shared /vibe-trade-shared
+RUN pip install --no-cache-dir /vibe-trade-shared && \
+    echo "✅ vibe-trade-shared installed"
+
+RUN mkdir -p /Lean/src
+
+# Copy LEAN code (paths relative to workspace root)
+COPY vibe-trade-lean/src/data/ /Lean/src/data/
+COPY vibe-trade-lean/src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/
+COPY vibe-trade-lean/src/Algorithms/indicators/ /Lean/Algorithm.Python/indicators/
+COPY vibe-trade-lean/src/Algorithms/conditions/ /Lean/Algorithm.Python/conditions/
+COPY vibe-trade-lean/src/Algorithms/trades/ /Lean/Algorithm.Python/trades/
+COPY vibe-trade-lean/src/Algorithms/position/ /Lean/Algorithm.Python/position/
+COPY vibe-trade-lean/src/Algorithms/gates/ /Lean/Algorithm.Python/gates/
+COPY vibe-trade-lean/src/Algorithms/costs/ /Lean/Algorithm.Python/costs/
+COPY vibe-trade-lean/src/Algorithms/symbols/ /Lean/Algorithm.Python/symbols/
+COPY vibe-trade-lean/src/Algorithms/ir/ /Lean/Algorithm.Python/ir/
+COPY vibe-trade-lean/src/Algorithms/execution/ /Lean/Algorithm.Python/execution/
+COPY vibe-trade-lean/src/Algorithms/initialization/ /Lean/Algorithm.Python/initialization/
+COPY vibe-trade-lean/src/Algorithms/state/ /Lean/Algorithm.Python/state/
+COPY vibe-trade-lean/src/serve_backtest.py /Lean/
+
+RUN touch /Lean/src/__init__.py
+
+COPY vibe-trade-lean/data/ /Lean/Data/
+
+ENV PYTHONPATH="/Lean:${PYTHONPATH}"
+EXPOSE 8080
+WORKDIR /Lean
+ENTRYPOINT []
+CMD ["/opt/miniconda3/bin/python3", "/Lean/serve_backtest.py"]
