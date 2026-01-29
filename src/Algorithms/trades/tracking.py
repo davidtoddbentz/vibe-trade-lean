@@ -48,6 +48,40 @@ def create_lot(
     )
 
 
+def split_lot(lot: Lot, keep_frac: float) -> tuple[Lot, Lot]:
+    """Split a lot into kept and closed portions.
+
+    Args:
+        lot: Original lot
+        keep_frac: Fraction to keep (0.0-1.0)
+
+    Returns:
+        (kept_lot, closed_lot) with quantities proportioned
+    """
+    close_frac = 1.0 - keep_frac
+    kept = Lot(
+        lot_id=lot.lot_id,
+        symbol=lot.symbol,
+        direction=lot.direction,
+        entry_time=lot.entry_time,
+        entry_price=lot.entry_price,
+        entry_bar=lot.entry_bar,
+        quantity=lot.quantity * keep_frac,
+        entry_fee=lot.entry_fee * keep_frac,
+    )
+    closed = Lot(
+        lot_id=lot.lot_id,
+        symbol=lot.symbol,
+        direction=lot.direction,
+        entry_time=lot.entry_time,
+        entry_price=lot.entry_price,
+        entry_bar=lot.entry_bar,
+        quantity=lot.quantity * close_frac,
+        entry_fee=lot.entry_fee * close_frac,
+    )
+    return kept, closed
+
+
 def close_lots(
     lots: list[Lot],
     exit_price: float,

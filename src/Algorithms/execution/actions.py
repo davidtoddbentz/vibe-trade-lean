@@ -10,6 +10,7 @@ from typing import Any
 from vibe_trade_shared.models.ir import (
     SetHoldingsAction,
     LiquidateAction,
+    ReducePositionAction,
     MarketOrderAction,
     EntryAction,
     ExitAction,
@@ -78,6 +79,16 @@ def execute_action(
 
         else:
             ctx.log(f"⚠️ Unknown sizing_mode: {sizing_mode}")
+
+    elif isinstance(action, ReducePositionAction):
+        # Reduce position by size_frac of current holdings
+        current_qty = float(ctx.portfolio[ctx.symbol].Quantity)
+        if current_qty != 0 and action.size_frac > 0:
+            reduce_qty = -current_qty * action.size_frac
+            ctx.market_order(ctx.symbol, reduce_qty)
+            ctx.log(f"   Reduce position: {action.size_frac:.0%} of {abs(current_qty):.6f}")
+        elif action.size_frac == 0:
+            ctx.log("   Reduce position: size_frac=0, no action")
 
     elif isinstance(action, LiquidateAction):
         ctx.liquidate(ctx.symbol)

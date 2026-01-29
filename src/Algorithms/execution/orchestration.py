@@ -12,13 +12,14 @@ from vibe_trade_shared.models.ir import (
     ExitRule,
     OverlayRule,
     SetHoldingsAction,
+    ReducePositionAction,
     MarketOrderAction,
     Condition,
     StateOp,
 )
 from execution.types import Lot, TrackingState
 from execution.context import ExecutionContext
-from trades import create_lot, close_lots
+from trades import create_lot, close_lots, split_lot
 from position import apply_scale_in, apply_overlay_scale, compute_overlay_scale
 
 
@@ -164,21 +165,56 @@ def execute_exit(
             if tracking.current_lots:
                 exit_reason = exit_rule.id or "unknown"
 
-                # Distribute exit fee across lots proportionally
-                total_qty = sum(lot.quantity for lot in tracking.current_lots)
-                for lot in tracking.current_lots:
-                    lot_qty = lot.quantity
-                    lot._exit_fee_share = exit_fee * (lot_qty / total_qty) if total_qty > 0 else 0.0
-
-                closed_lots = close_lots(
-                    lots=tracking.current_lots,
-                    exit_price=exit_price,
-                    exit_time=current_time,
-                    exit_bar=tracking.bar_count,
-                    exit_reason=exit_reason,
+                # Branch: partial exit vs full exit
+                is_partial = (
+                    isinstance(exit_rule.action, ReducePositionAction)
+                    and exit_rule.action.size_frac < 1.0
                 )
-                tracking.trades.extend(closed_lots)
-                tracking.current_lots = []
+
+                if is_partial:
+                    # PARTIAL EXIT: split lots, close fraction, keep remainder
+                    size_frac = exit_rule.action.size_frac
+                    keep_frac = 1.0 - size_frac
+
+                    lots_to_close = []
+                    lots_to_keep = []
+                    total_qty = sum(lot.quantity for lot in tracking.current_lots)
+
+                    for lot in tracking.current_lots:
+                        kept, to_close = split_lot(lot, keep_frac)
+                        lots_to_keep.append(kept)
+                        to_close._exit_fee_share = (
+                            exit_fee * (to_close.quantity / total_qty) if total_qty > 0 else 0.0
+                        )
+                        lots_to_close.append(to_close)
+
+                    closed_lots = close_lots(
+                        lots=lots_to_close,
+                        exit_price=exit_price,
+                        exit_time=current_time,
+                        exit_bar=tracking.bar_count,
+                        exit_reason=exit_reason,
+                    )
+                    tracking.trades.extend(closed_lots)
+                    tracking.current_lots = lots_to_keep
+                else:
+                    # FULL EXIT: close all lots, clear position
+                    total_qty = sum(lot.quantity for lot in tracking.current_lots)
+                    for lot in tracking.current_lots:
+                        lot_qty = lot.quantity
+                        lot._exit_fee_share = (
+                            exit_fee * (lot_qty / total_qty) if total_qty > 0 else 0.0
+                        )
+
+                    closed_lots = close_lots(
+                        lots=tracking.current_lots,
+                        exit_price=exit_price,
+                        exit_time=current_time,
+                        exit_bar=tracking.bar_count,
+                        exit_reason=exit_reason,
+                    )
+                    tracking.trades.extend(closed_lots)
+                    tracking.current_lots = []
 
             exit_id = exit_rule.id or "unknown"
             if num_lots > 1:
