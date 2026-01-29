@@ -66,46 +66,35 @@ def execute_action(
                 log_func(f"⚠️ Order quantity is zero for allocation={allocation}, skipping order")
 
         elif sizing_mode == "fixed_usd":
-            # Fixed USD amount - convert to portfolio allocation
-            # We use CalculateOrderQuantity to ensure LEAN handles the order properly
+            # Fixed USD amount - compute quantity directly from price
+            # We bypass CalculateOrderQuantity because it computes target allocation
+            # (not incremental), which gives wrong results for accumulate mode.
             if action.fixed_usd is None:
                 log_func("⚠️ Cannot execute fixed_usd: fixed_usd is None")
                 return
             fixed_usd = action.fixed_usd
-            portfolio_value = portfolio.TotalPortfolioValue
-            if portfolio_value > 0:
-                allocation = fixed_usd / portfolio_value
-                quantity = calculate_order_quantity_func(symbol, allocation)
-                if quantity != 0:
+            price = float(bar.Close) if bar else securities[symbol].Price
+            if price > 0:
+                quantity = fixed_usd / price
+                if quantity > 0:
                     market_order_func(symbol, quantity)
-                    price = securities[symbol].Price
                     log_func(f"   Fixed USD: ${abs(fixed_usd):.2f} -> {abs(quantity):.6f} units @ ${price:.2f}")
                 else:
                     log_func(f"⚠️ Order quantity is zero for fixed_usd=${fixed_usd}, skipping order")
             else:
-                log_func(f"⚠️ Cannot execute fixed_usd: portfolio value is {portfolio_value}")
+                log_func(f"⚠️ Cannot execute fixed_usd: price is {price}")
 
         elif sizing_mode == "fixed_units":
-            # Fixed number of units - use CalculateOrderQuantity for proper handling
+            # Fixed number of units - use MarketOrder directly
             if action.fixed_units is None:
                 log_func("⚠️ Cannot execute fixed_units: fixed_units is None")
                 return
             fixed_units = action.fixed_units
-            price = float(bar.Close) if bar else securities[symbol].Price
-            if price > 0:
-                portfolio_value = portfolio.TotalPortfolioValue
-                if portfolio_value > 0:
-                    allocation = (fixed_units * price) / portfolio_value
-                    quantity = calculate_order_quantity_func(symbol, allocation)
-                    if quantity != 0:
-                        market_order_func(symbol, quantity)
-                        log_func(f"   Fixed units: {abs(quantity):.6f}")
-                    else:
-                        log_func("⚠️ Order quantity is zero for fixed_units, skipping order")
-                else:
-                    log_func(f"⚠️ Cannot execute fixed_units: portfolio value is {portfolio_value}")
+            if fixed_units > 0:
+                market_order_func(symbol, fixed_units)
+                log_func(f"   Fixed units: {abs(fixed_units):.6f}")
             else:
-                log_func(f"⚠️ Cannot execute fixed_units: price is {price}")
+                log_func("⚠️ Order quantity is zero for fixed_units, skipping order")
 
         else:
             log_func(f"⚠️ Unknown sizing_mode: {sizing_mode}")

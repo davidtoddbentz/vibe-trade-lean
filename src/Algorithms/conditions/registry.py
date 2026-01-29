@@ -19,34 +19,9 @@ Phase 7: "compare" uses typed CompareCondition and EvalContext (conditions/compa
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, cast
-
-from pydantic import TypeAdapter
+from typing import TYPE_CHECKING, Any, Callable
 
 from indicators import resolve_value as _resolve_value_impl
-from vibe_trade_shared.models.ir import (
-    AllOfCondition,
-    AnyOfCondition,
-    BreakoutCondition,
-    CompareCondition,
-    CrossCondition,
-    EventWindowCondition,
-    FlagPatternCondition,
-    GapCondition,
-    IntermarketCondition,
-    LiquiditySweepCondition,
-    MultiLeaderIntermarketCondition,
-    NotCondition,
-    PennantPatternCondition,
-    SequenceCondition,
-    SpreadCondition,
-    SqueezeCondition,
-    StateCondition,
-    TimeFilterCondition,
-    TrailingBreakoutCondition,
-    TrailingStateCondition,
-    RegimeCondition,
-)
 
 from .basic import (
     evaluate_allof as _evaluate_allof_typed,
@@ -79,33 +54,6 @@ if TYPE_CHECKING:
     # Avoid circular import - StrategyRuntime imports this module
     pass
 
-CompareConditionAdapter = TypeAdapter(CompareCondition)
-AllOfConditionAdapter = TypeAdapter(AllOfCondition)
-AnyOfConditionAdapter = TypeAdapter(AnyOfCondition)
-NotConditionAdapter = TypeAdapter(NotCondition)
-CrossConditionAdapter = TypeAdapter(CrossCondition)
-TimeFilterConditionAdapter = TypeAdapter(TimeFilterCondition)
-StateConditionAdapter = TypeAdapter(StateCondition)
-SequenceConditionAdapter = TypeAdapter(SequenceCondition)
-EventWindowConditionAdapter = TypeAdapter(EventWindowCondition)
-GapConditionAdapter = TypeAdapter(GapCondition)
-BreakoutConditionAdapter = TypeAdapter(BreakoutCondition)
-SqueezeConditionAdapter = TypeAdapter(SqueezeCondition)
-TrailingBreakoutConditionAdapter = TypeAdapter(TrailingBreakoutCondition)
-TrailingStateConditionAdapter = TypeAdapter(TrailingStateCondition)
-SpreadConditionAdapter = TypeAdapter(SpreadCondition)
-IntermarketConditionAdapter = TypeAdapter(IntermarketCondition)
-MultiLeaderIntermarketConditionAdapter = TypeAdapter(MultiLeaderIntermarketCondition)
-LiquiditySweepConditionAdapter = TypeAdapter(LiquiditySweepCondition)
-FlagPatternConditionAdapter = TypeAdapter(FlagPatternCondition)
-PennantPatternConditionAdapter = TypeAdapter(PennantPatternCondition)
-RegimeConditionAdapter = TypeAdapter(RegimeCondition)
-
-_DAY_NAME_TO_INT = {
-    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-    "friday": 4, "saturday": 5, "sunday": 6,
-}
-
 
 def _build_eval_context(runtime: Any) -> EvalContext:
     """Build EvalContext from StrategyRuntime for typed evaluators."""
@@ -128,7 +76,6 @@ def _build_eval_context(runtime: Any) -> EvalContext:
         current_time=runtime.Time,
         cross_state=getattr(runtime, "_cross_prev", {}),
         rolling_windows=getattr(runtime, "rolling_windows", {}),
-        rolling_minmax=getattr(runtime, "rolling_minmax", {}),
         indicators=getattr(runtime, "indicators", {}),
         breakout_prev_max=getattr(runtime, "_breakout_prev_max", {}),
         breakout_prev_min=getattr(runtime, "_breakout_prev_min", {}),
@@ -160,162 +107,115 @@ class CompareOp(Enum):
         return ops[self](left, right)
 
 
-# Type alias: condition is Condition (typed) from StrategyIR or dict (legacy/candlestick)
+# Type alias: condition is a typed Condition from StrategyIR
 ConditionEvaluator = Callable[[Any, Any, Any], bool]
 
 
 def _evaluate_compare(condition: Any, bar: Any, runtime: Any) -> bool:
-    """Evaluate a compare condition. Condition is typed from StrategyIR or dict (legacy)."""
+    """Evaluate a compare condition. Condition is typed from StrategyIR."""
     ctx = _build_eval_context(runtime)
-    typed = cast(CompareCondition, CompareConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(CompareCondition, condition)
-    return _evaluate_compare_typed(typed, bar, ctx)
+    return _evaluate_compare_typed(condition, bar, ctx)
 
 
 def _evaluate_allof(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(AllOfCondition, AllOfConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(AllOfCondition, condition)
-    return _evaluate_allof_typed(typed, bar, ctx)
+    return _evaluate_allof_typed(condition, bar, ctx)
 
 
 def _evaluate_anyof(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(AnyOfCondition, AnyOfConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(AnyOfCondition, condition)
-    return _evaluate_anyof_typed(typed, bar, ctx)
+    return _evaluate_anyof_typed(condition, bar, ctx)
 
 
 def _evaluate_not(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(NotCondition, NotConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(NotCondition, condition)
-    return _evaluate_not_typed(typed, bar, ctx)
+    return _evaluate_not_typed(condition, bar, ctx)
 
 
 def _evaluate_regime(condition: Any, bar: Any, runtime: Any) -> bool:
     """Evaluate a regime condition via typed evaluator (conditions/regime.py)."""
     ctx = _build_eval_context(runtime)
-    typed = (
-        cast(RegimeCondition, RegimeConditionAdapter.validate_python(condition))
-        if isinstance(condition, dict)
-        else cast(RegimeCondition, condition)
-    )
-    return _evaluate_regime_typed(typed, bar, ctx)
+    return _evaluate_regime_typed(condition, bar, ctx)
 
 
 def _evaluate_cross(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    if isinstance(condition, dict):
-        cond = dict(condition)
-        d = cond.get("direction", "above")
-        if d in ("cross_above", "above"):
-            cond["direction"] = "above"
-        elif d in ("cross_below", "below"):
-            cond["direction"] = "below"
-        typed = CrossConditionAdapter.validate_python(cond)
-    else:
-        typed = cast(CrossCondition, condition)
-    return _evaluate_cross_typed(typed, bar, ctx)
+    return _evaluate_cross_typed(condition, bar, ctx)
 
 
 def _evaluate_squeeze(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(SqueezeCondition, SqueezeConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(SqueezeCondition, condition)
-    return _evaluate_squeeze_typed(typed, bar, ctx)
+    return _evaluate_squeeze_typed(condition, bar, ctx)
 
 
 def _evaluate_breakout(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(BreakoutCondition, BreakoutConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(BreakoutCondition, condition)
-    return _evaluate_breakout_typed(typed, bar, ctx)
+    return _evaluate_breakout_typed(condition, bar, ctx)
 
 
 def _evaluate_spread(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(SpreadCondition, SpreadConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(SpreadCondition, condition)
-    return _evaluate_spread_typed(typed, bar, ctx)
+    return _evaluate_spread_typed(condition, bar, ctx)
 
 
 def _evaluate_intermarket(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(IntermarketCondition, IntermarketConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(IntermarketCondition, condition)
-    return _evaluate_intermarket_typed(typed, bar, ctx)
+    return _evaluate_intermarket_typed(condition, bar, ctx)
 
 
 def _evaluate_time_filter(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    if isinstance(condition, dict):
-        cond = dict(condition)
-        dow = cond.get("days_of_week", [])
-        if dow:
-            allowed = []
-            for d in dow:
-                if isinstance(d, int):
-                    allowed.append(d)
-                elif isinstance(d, str):
-                    allowed.append(_DAY_NAME_TO_INT.get(d.lower(), -1))
-            cond["days_of_week"] = allowed
-        typed = TimeFilterConditionAdapter.validate_python(cond)
-    else:
-        typed = cast(TimeFilterCondition, condition)
-    return _evaluate_time_filter_typed(typed, bar, ctx)
+    return _evaluate_time_filter_typed(condition, bar, ctx)
 
 
 def _evaluate_state_condition(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(StateCondition, StateConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(StateCondition, condition)
-    return _evaluate_state_condition_typed(typed, bar, ctx)
+    return _evaluate_state_condition_typed(condition, bar, ctx)
 
 
 def _evaluate_gap(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(GapCondition, GapConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(GapCondition, condition)
-    return _evaluate_gap_typed(typed, bar, ctx)
+    return _evaluate_gap_typed(condition, bar, ctx)
 
 
 def _evaluate_trailing_breakout(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(TrailingBreakoutCondition, TrailingBreakoutConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(TrailingBreakoutCondition, condition)
-    return _evaluate_trailing_breakout_typed(typed, bar, ctx)
+    return _evaluate_trailing_breakout_typed(condition, bar, ctx)
 
 
 def _evaluate_trailing_state(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(TrailingStateCondition, TrailingStateConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(TrailingStateCondition, condition)
-    return _evaluate_trailing_state_typed(typed, bar, ctx)
+    return _evaluate_trailing_state_typed(condition, bar, ctx)
 
 
 def _evaluate_sequence(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(SequenceCondition, SequenceConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(SequenceCondition, condition)
-    return _evaluate_sequence_typed(typed, bar, ctx)
+    return _evaluate_sequence_typed(condition, bar, ctx)
 
 
 def _evaluate_event_window(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(EventWindowCondition, EventWindowConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(EventWindowCondition, condition)
-    return _evaluate_event_window_typed(typed, bar, ctx)
+    return _evaluate_event_window_typed(condition, bar, ctx)
 
 
 def _evaluate_multi_leader_intermarket(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(MultiLeaderIntermarketCondition, MultiLeaderIntermarketConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(MultiLeaderIntermarketCondition, condition)
-    return _evaluate_multi_leader_intermarket_typed(typed, bar, ctx)
+    return _evaluate_multi_leader_intermarket_typed(condition, bar, ctx)
 
 
 def _evaluate_liquidity_sweep(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(LiquiditySweepCondition, LiquiditySweepConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(LiquiditySweepCondition, condition)
-    return _evaluate_liquidity_sweep_typed(typed, bar, ctx)
+    return _evaluate_liquidity_sweep_typed(condition, bar, ctx)
 
 
 def _evaluate_flag_pattern(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(FlagPatternCondition, FlagPatternConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(FlagPatternCondition, condition)
-    return _evaluate_flag_pattern_typed(typed, bar, ctx)
+    return _evaluate_flag_pattern_typed(condition, bar, ctx)
 
 
 def _evaluate_pennant_pattern(condition: Any, bar: Any, runtime: Any) -> bool:
     ctx = _build_eval_context(runtime)
-    typed = cast(PennantPatternCondition, PennantPatternConditionAdapter.validate_python(condition)) if isinstance(condition, dict) else cast(PennantPatternCondition, condition)
-    return _evaluate_pennant_pattern_typed(typed, bar, ctx)
+    return _evaluate_pennant_pattern_typed(condition, bar, ctx)
 
 
 def _evaluate_candlestick(condition: Any, bar: Any, runtime: Any) -> bool:
@@ -336,9 +236,9 @@ def _evaluate_candlestick(condition: Any, bar: Any, runtime: Any) -> bool:
     - direction="bearish": pattern value == -1
     - direction="any": pattern value != 0 (either bullish or bearish)
     """
-    pattern = getattr(condition, "pattern", None) or (condition.get("pattern", "doji") if isinstance(condition, dict) else "doji")
-    direction = (getattr(condition, "direction", None) or (condition.get("direction", "any") if isinstance(condition, dict) else "any")).lower()
-    indicator_id = getattr(condition, "indicator_id", None) or (condition.get("indicator_id", f"candle_{pattern}") if isinstance(condition, dict) else f"candle_{pattern}")
+    pattern = getattr(condition, "pattern", "doji")
+    direction = getattr(condition, "direction", "any").lower()
+    indicator_id = getattr(condition, "indicator_id", f"candle_{pattern}")
 
     # Get the candlestick pattern indicator value
     indicator = runtime.indicators.get(indicator_id)
@@ -399,16 +299,13 @@ CONDITION_EVALUATORS: dict[str, ConditionEvaluator] = {
 def evaluate_condition(condition: Any, bar: Any, runtime: Any) -> bool:
     """Evaluate a condition from IR using the registry.
 
-    Condition is usually a typed Condition (Pydantic model) from StrategyIR;
-    dict is supported for legacy/candlestick paths. No per-eval validation
-    when condition is already typed (validated once at request load).
+    Condition is a typed Condition (Pydantic model) from StrategyIR.
+    All conditions are typed from model_validate() at IR load time.
     """
-    if condition is None or (isinstance(condition, dict) and not condition):
+    if condition is None:
         return True
 
-    cond_type = getattr(condition, "type", None) or (
-        condition.get("type") if isinstance(condition, dict) else None
-    )
+    cond_type = getattr(condition, "type", None)
     evaluator = CONDITION_EVALUATORS.get(cond_type)
 
     if evaluator is None:

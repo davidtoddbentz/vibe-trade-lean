@@ -20,7 +20,6 @@ class EvalContext:
     current_time: Any
     cross_state: dict[str, tuple[float, float]]  # key -> (left_val, right_val) for cross detection
     rolling_windows: dict[str, Any]  # id -> { "window": RollingWindow-like } for gap, etc.
-    rolling_minmax: dict[str, Any]  # id -> { "window": ... } for liquidity_sweep levels
-    indicators: dict[str, Any]  # id -> LEAN indicator for breakout, trailing_breakout, etc.
+    indicators: dict[str, Any]  # id -> LEAN indicator (includes MAX/MIN for level detection)
     breakout_prev_max: dict[str, float]  # max_ind_id -> previous N-bar max
     breakout_prev_min: dict[str, float]  # min_ind_id -> previous N-bar min

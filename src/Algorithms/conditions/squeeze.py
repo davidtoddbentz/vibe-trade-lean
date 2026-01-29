@@ -26,8 +26,9 @@ def evaluate_squeeze(condition: SqueezeCondition, bar: Any, ctx: EvalContext) ->
         if not in_squeeze:
             return False
 
+    # BB width percentile - manual calculation (derived value)
     width_rw = ctx.rolling_windows.get("bb_width")
-    if width_rw and getattr(width_rw.get("window"), "IsReady", False):
+    if width_rw and width_rw.get("window") and width_rw["window"].IsReady:
         upper = bb_ind.UpperBand.Current.Value
         lower = bb_ind.LowerBand.Current.Value
         middle = bb_ind.MiddleBand.Current.Value

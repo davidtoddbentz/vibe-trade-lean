@@ -14,25 +14,15 @@ def evaluate_liquidity_sweep(
 ) -> bool:
     """Evaluate liquidity sweep: break below level then reclaim within lookback_bars."""
     if condition.level_type == "rolling_min":
-        level_ind = (
-            ctx.rolling_minmax.get(f"min_{condition.level_period}")
-            or ctx.rolling_minmax.get("level_min")
-        )
-        if level_ind and getattr(level_ind.get("window"), "IsReady", False):
-            window = level_ind["window"]
-            level_value = min(list(window)) if hasattr(window, "__iter__") else None
-        else:
+        min_ind = ctx.indicators.get(f"min_{condition.level_period}")
+        if not min_ind or not min_ind.IsReady:
             return False
+        level_value = min_ind.Current.Value
     elif condition.level_type == "rolling_max":
-        level_ind = (
-            ctx.rolling_minmax.get(f"max_{condition.level_period}")
-            or ctx.rolling_minmax.get("level_max")
-        )
-        if level_ind and getattr(level_ind.get("window"), "IsReady", False):
-            window = level_ind["window"]
-            level_value = max(list(window)) if hasattr(window, "__iter__") else None
-        else:
+        max_ind = ctx.indicators.get(f"max_{condition.level_period}")
+        if not max_ind or not max_ind.IsReady:
             return False
+        level_value = max_ind.Current.Value
     else:
         level_value = getattr(condition, "fixed_level", None)
         if level_value is None:

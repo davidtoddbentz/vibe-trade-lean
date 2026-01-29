@@ -20,7 +20,10 @@ def _sequence_key(condition: SequenceCondition) -> str:
 def evaluate_sequence(
     condition: SequenceCondition, bar: Any, ctx: EvalContext
 ) -> bool:
-    """Evaluate sequence: steps must occur in order with optional hold_bars/within_bars."""
+    """Evaluate sequence: steps must occur in order with optional hold_bars/within_bars.
+
+    Returns True on the same bar that the final step completes (not one bar later).
+    """
     steps = condition.steps
     if not steps:
         return True
@@ -54,12 +57,20 @@ def evaluate_sequence(
             hold_count = ctx.state.get(f"{seq_key}_hold", 0) + 1
             ctx.state[f"{seq_key}_hold"] = hold_count
             if hold_count >= hold_bars:
-                ctx.state[seq_key] = current_step + 1
+                next_step = current_step + 1
+                ctx.state[seq_key] = next_step
                 ctx.state[f"{seq_key}_bars"] = 0
                 ctx.state[f"{seq_key}_hold"] = 0
+                if next_step >= len(steps):
+                    ctx.state[seq_key] = 0
+                    return True
         else:
-            ctx.state[seq_key] = current_step + 1
+            next_step = current_step + 1
+            ctx.state[seq_key] = next_step
             ctx.state[f"{seq_key}_bars"] = 0
+            if next_step >= len(steps):
+                ctx.state[seq_key] = 0
+                return True
     else:
         ctx.state[f"{seq_key}_hold"] = 0
 

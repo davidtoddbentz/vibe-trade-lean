@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from vibe_trade_shared.models.ir import RegimeCondition
-from vibe_trade_shared.models.ir.enums import CompareOp
+from vibe_trade_shared.models.ir.enums import CompareOp, RegimeMetric
 
 from .context import EvalContext
 
@@ -21,11 +21,8 @@ def evaluate_regime(
     condition: RegimeCondition, bar: Any, ctx: EvalContext
 ) -> bool:
     """Evaluate a regime condition using EvalContext."""
-    metric = (
-        condition.metric.value
-        if hasattr(condition.metric, "value")
-        else str(condition.metric)
-    )
+    # Handle both enum and string metric types
+    metric = condition.metric.value if isinstance(condition.metric, RegimeMetric) else str(condition.metric)
     op = (
         condition.op
         if isinstance(condition.op, CompareOp)
@@ -48,7 +45,10 @@ def evaluate_regime(
             return _apply_op(op, adx_ind.Current.Value, value)
         return False
     if metric in ("vol_bb_width_pctile", "bb_width_pctile"):
-        bb_ind = ctx.indicators.get("bb") or ctx.indicators.get("bb_20")
+        # BB width percentile - manual calculation (derived value, not direct price)
+        # IR translator creates BB with deterministic ID: bb_{period}
+        bb_period = condition.lookback_bars or 20
+        bb_ind = ctx.indicators.get(f"bb_{bb_period}")
         if not bb_ind:
             return False
         u = bb_ind.UpperBand.Current.Value
@@ -70,13 +70,16 @@ def evaluate_regime(
             return _apply_op(op, (atr_ind.Current.Value / bar.Close) * 100, value)
         return False
     if metric == "volume_pctile":
-        vol_rw = ctx.rolling_windows.get("volume")
-        if vol_rw and getattr(vol_rw.get("window"), "IsReady", False):
-            w = vol_rw["window"]
-            vols = list(w) if hasattr(w, "__iter__") else []
-            pctile = (sum(1 for v in vols if v < float(bar.Volume)) / len(vols) * 100) if vols else 0
-            return _apply_op(op, pctile, value)
-        return False
+        # Use PercentileRank indicator (works on volume data)
+        # IR translator creates indicator with ID: volume_pctile_{pctile_period} (defaults to 100)
+        pctile_id = "volume_pctile_100"  # IR translator defaults to 100 if not specified
+        pctile_ind = ctx.indicators.get(pctile_id)
+        
+        if not pctile_ind or not pctile_ind.IsReady:
+            return False
+        
+        pctile = pctile_ind.Current.Value
+        return _apply_op(op, pctile, value)
     if metric == "dist_from_vwap_pct":
         vwap_ind = ctx.indicators.get("vwap")
         if vwap_ind and getattr(vwap_ind.Current, "Value", 0) != 0:
@@ -89,37 +92,30 @@ def evaluate_regime(
         return False
     if metric == "gap_pct":
         prev_rw = ctx.rolling_windows.get("prev_close")
-        if prev_rw and getattr(prev_rw.get("window"), "IsReady", False):
+        if prev_rw and prev_rw.get("window") and prev_rw["window"].IsReady:
             w = prev_rw["window"]
-            prev = w[1] if hasattr(w, "__getitem__") else None
+            prev = w[1] if w.Count > 1 else None
             if prev and prev != 0:
                 return _apply_op(op, (bar.Open - prev) / prev * 100, value)
         return False
     if metric == "price_level_touch":
         # Check if price touches a level (bar.Low <= level <= bar.High)
         lookback = condition.lookback_bars or 20
-        level_reference = getattr(condition, "level_reference", None) or "previous_low"
+        level_reference = condition.level_reference or "previous_low"
         
-        # Get level from rolling min/max based on level_reference
+        # Get level from MAX/MIN indicators
         if level_reference == "previous_low":
-            level_ind = ctx.rolling_minmax.get(f"min_{lookback}") or ctx.rolling_minmax.get(f"rmm_low_{lookback}")
-            if level_ind and getattr(level_ind.get("window"), "IsReady", False):
-                window = level_ind["window"]
-                level_value = min(list(window)) if hasattr(window, "__iter__") else None
-            else:
+            min_ind = ctx.indicators.get(f"min_{lookback}")
+            if not min_ind or not min_ind.IsReady:
                 return False
+            level_value = min_ind.Current.Value
         elif level_reference == "previous_high":
-            level_ind = ctx.rolling_minmax.get(f"max_{lookback}") or ctx.rolling_minmax.get(f"rmm_high_{lookback}")
-            if level_ind and getattr(level_ind.get("window"), "IsReady", False):
-                window = level_ind["window"]
-                level_value = max(list(window)) if hasattr(window, "__iter__") else None
-            else:
+            max_ind = ctx.indicators.get(f"max_{lookback}")
+            if not max_ind or not max_ind.IsReady:
                 return False
+            level_value = max_ind.Current.Value
         else:
             # Other level_reference types not yet supported
-            return False
-        
-        if level_value is None:
             return False
         
         # Check if bar touches the level: bar.Low <= level <= bar.High
@@ -132,13 +128,11 @@ def evaluate_regime(
         sweep_triggered = ctx.state.get(f"{state_key}_triggered", False)
         sweep_bar_count = ctx.state.get(f"{state_key}_bars", 0)
         
-        # Get level from rolling min (default for liquidity sweep)
-        level_ind = ctx.rolling_minmax.get(f"min_{lookback}") or ctx.rolling_minmax.get(f"rmm_low_{lookback}")
-        if level_ind and getattr(level_ind.get("window"), "IsReady", False):
-            window = level_ind["window"]
-            level_value = min(list(window)) if hasattr(window, "__iter__") else None
-        else:
+        # Get level from MIN indicator
+        min_ind = ctx.indicators.get(f"min_{lookback}")
+        if not min_ind or not min_ind.IsReady:
             return False
+        level_value = min_ind.Current.Value
         
         if level_value is None:
             return False

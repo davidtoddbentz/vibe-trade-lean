@@ -22,7 +22,6 @@ class IndicatorCategory(Enum):
     LEAN = "lean"  # LEAN built-in, auto-updated
     ROLLING_WINDOW = "rolling_window"  # RollingWindow for historical values
     VOL_SMA = "vol_sma"  # Volume SMA, manual update
-    ROLLING_MINMAX = "rolling_minmax"  # Rolling min/max tracker
     AVWAP = "avwap"  # Anchored VWAP tracker
 
 
@@ -46,7 +45,7 @@ class IndicatorCreator(Protocol):
 
     def __call__(
         self,
-        ind_def: dict[str, Any],
+        ind_def: Any,
         algo: QCAlgorithm,
         symbol: Symbol,
         resolution: Any,
@@ -59,10 +58,10 @@ class IndicatorCreator(Protocol):
 
 
 def create_ema(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create EMA indicator."""
-    period = ind_def.get("period", 20)
+    period = getattr(ind_def, "period", 20)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.EMA(symbol, period, resolution=resolution),
@@ -70,10 +69,10 @@ def create_ema(
 
 
 def create_sma(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create SMA indicator."""
-    period = ind_def.get("period", 20)
+    period = getattr(ind_def, "period", 20)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.SMA(symbol, period, resolution=resolution),
@@ -81,11 +80,11 @@ def create_sma(
 
 
 def create_bb(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Bollinger Bands indicator."""
-    period = ind_def.get("period", 20)
-    mult = ind_def.get("multiplier", 2.0)
+    period = getattr(ind_def, "period", 20)
+    mult = getattr(ind_def, "multiplier", 2.0)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.BB(symbol, period, mult, resolution=resolution),
@@ -93,11 +92,11 @@ def create_bb(
 
 
 def create_kc(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Keltner Channel indicator."""
-    period = ind_def.get("period", 20)
-    mult = ind_def.get("multiplier", 2.0)
+    period = getattr(ind_def, "period", 20)
+    mult = getattr(ind_def, "multiplier", 2.0)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.KCH(symbol, period, mult, resolution=resolution),
@@ -105,10 +104,10 @@ def create_kc(
 
 
 def create_atr(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create ATR indicator."""
-    period = ind_def.get("period", 14)
+    period = getattr(ind_def, "period", 14)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.ATR(symbol, period, resolution=resolution),
@@ -116,10 +115,10 @@ def create_atr(
 
 
 def create_max(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create MAX indicator."""
-    period = ind_def.get("period", 50)
+    period = getattr(ind_def, "period", 50)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.MAX(symbol, period, resolution=resolution),
@@ -127,10 +126,10 @@ def create_max(
 
 
 def create_min(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create MIN indicator."""
-    period = ind_def.get("period", 50)
+    period = getattr(ind_def, "period", 50)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.MIN(symbol, period, resolution=resolution),
@@ -138,10 +137,10 @@ def create_min(
 
 
 def create_roc(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create ROC indicator."""
-    period = ind_def.get("period", 1)
+    period = getattr(ind_def, "period", 1)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.ROC(symbol, period, resolution=resolution),
@@ -149,10 +148,10 @@ def create_roc(
 
 
 def create_adx(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create ADX indicator."""
-    period = ind_def.get("period", 14)
+    period = getattr(ind_def, "period", 14)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.ADX(symbol, period, resolution=resolution),
@@ -160,10 +159,10 @@ def create_adx(
 
 
 def create_rsi(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create RSI indicator."""
-    period = ind_def.get("period", 14)
+    period = getattr(ind_def, "period", 14)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.RSI(symbol, period, resolution=resolution),
@@ -171,12 +170,12 @@ def create_rsi(
 
 
 def create_macd(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create MACD indicator."""
-    fast = ind_def.get("fast_period", 12)
-    slow = ind_def.get("slow_period", 26)
-    signal = ind_def.get("signal_period", 9)
+    fast = getattr(ind_def, "fast_period", 12)
+    slow = getattr(ind_def, "slow_period", 26)
+    signal = getattr(ind_def, "signal_period", 9)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.MACD(symbol, fast, slow, signal, resolution=resolution),
@@ -184,10 +183,10 @@ def create_macd(
 
 
 def create_dc(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Donchian Channel indicator."""
-    period = ind_def.get("period", 20)
+    period = getattr(ind_def, "period", 20)
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.DCH(symbol, period, resolution=resolution),
@@ -195,10 +194,10 @@ def create_dc(
 
 
 def create_vwap(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create VWAP indicator."""
-    period = ind_def.get("period", 0)
+    period = getattr(ind_def, "period", 0)
     if period == 0:
         # Intraday VWAP (resets daily)
         indicator = algo.VWAP(symbol)
@@ -209,7 +208,7 @@ def create_vwap(
 
 
 def create_supertrend(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create SuperTrend indicator.
 
@@ -218,9 +217,9 @@ def create_supertrend(
     """
     from QuantConnect.Indicators import MovingAverageType
 
-    period = ind_def.get("period", 10)
-    multiplier = ind_def.get("multiplier", 3.0)
-    ma_type = ind_def.get("ma_type", "wilders")
+    period = getattr(ind_def, "period", 10)
+    multiplier = getattr(ind_def, "multiplier", 3.0)
+    ma_type = getattr(ind_def, "ma_type", "wilders")
 
     # Map string to MovingAverageType enum
     ma_type_map = {
@@ -237,16 +236,16 @@ def create_supertrend(
 
 
 def create_stochastic(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Stochastic indicator.
 
     Returns %K and %D oscillators (0-100 range).
     Properties: .StochK (fast), .StochD (slow/signal)
     """
-    period = ind_def.get("period", 14)
-    k_period = ind_def.get("k_period", 3)  # Smoothing for %K
-    d_period = ind_def.get("d_period", 3)  # Smoothing for %D
+    period = getattr(ind_def, "period", 14)
+    k_period = getattr(ind_def, "k_period", 3)  # Smoothing for %K
+    d_period = getattr(ind_def, "d_period", 3)  # Smoothing for %D
 
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
@@ -255,14 +254,14 @@ def create_stochastic(
 
 
 def create_cci(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Commodity Channel Index indicator.
 
     CCI measures the deviation of price from its statistical mean.
     Typical range: -100 to +100, with values outside indicating strong trends.
     """
-    period = ind_def.get("period", 20)
+    period = getattr(ind_def, "period", 20)
 
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
@@ -271,7 +270,7 @@ def create_cci(
 
 
 def create_obv(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create On-Balance Volume indicator.
 
@@ -285,7 +284,7 @@ def create_obv(
 
 
 def create_aroon(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Aroon Oscillator indicator.
 
@@ -293,11 +292,70 @@ def create_aroon(
     Range: -100 to +100. Positive = uptrend bias, Negative = downtrend bias.
     Properties: .AroonUp, .AroonDown (both 0-100)
     """
-    period = ind_def.get("period", 25)
+    period = getattr(ind_def, "period", 25)
 
     return IndicatorResult(
         category=IndicatorCategory.LEAN,
         indicator=algo.AROON(symbol, period, resolution=resolution),
+    )
+
+
+def create_percentile_rank(
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
+) -> IndicatorResult:
+    """Create PercentileRank indicator.
+
+    PercentileRank calculates where the current value falls within its
+    historical distribution (0-100 range).
+    """
+    period = getattr(ind_def, "period", 100)
+    return IndicatorResult(
+        category=IndicatorCategory.LEAN,
+        indicator=algo.PERCENTILERANK(symbol, period, resolution=resolution),
+    )
+
+
+def create_std(
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
+) -> IndicatorResult:
+    """Create Standard Deviation indicator."""
+    period = getattr(ind_def, "period", 20)
+    return IndicatorResult(
+        category=IndicatorCategory.LEAN,
+        indicator=algo.STD(symbol, period, resolution=resolution),
+    )
+
+
+def create_var(
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
+) -> IndicatorResult:
+    """Create Variance indicator."""
+    period = getattr(ind_def, "period", 20)
+    return IndicatorResult(
+        category=IndicatorCategory.LEAN,
+        indicator=algo.VAR(symbol, period, resolution=resolution),
+    )
+
+
+def create_mean(
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
+) -> IndicatorResult:
+    """Create Mean indicator."""
+    period = getattr(ind_def, "period", 20)
+    return IndicatorResult(
+        category=IndicatorCategory.LEAN,
+        indicator=algo.MEAN(symbol, period, resolution=resolution),
+    )
+
+
+def create_median(
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
+) -> IndicatorResult:
+    """Create Median indicator."""
+    period = getattr(ind_def, "period", 20)
+    return IndicatorResult(
+        category=IndicatorCategory.LEAN,
+        indicator=algo.MEDIAN(symbol, period, resolution=resolution),
     )
 
 
@@ -370,7 +428,7 @@ CANDLESTICK_PATTERNS = {
 
 
 def create_candlestick_pattern(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create a candlestick pattern indicator.
 
@@ -379,7 +437,7 @@ def create_candlestick_pattern(
     Args:
         ind_def: Must contain 'pattern' field with pattern name (e.g., 'doji', 'hammer')
     """
-    pattern_name = ind_def.get("pattern", "doji").lower().replace("-", "_")
+    pattern_name = getattr(ind_def, "pattern", "doji").lower().replace("-", "_")
 
     if pattern_name not in CANDLESTICK_PATTERNS:
         raise ValueError(f"Unknown candlestick pattern: {pattern_name}. "
@@ -400,12 +458,12 @@ def create_candlestick_pattern(
 
 
 def create_avwap(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Anchored VWAP tracker."""
-    anchor = ind_def.get("anchor", "session_open")
+    anchor = getattr(ind_def, "anchor", "session_open")
     if not anchor:
-        anchor = ind_def.get("params", {}).get("anchor", "session_open")
+        anchor = "session_open"
 
     return IndicatorResult(
         category=IndicatorCategory.AVWAP,
@@ -423,13 +481,13 @@ def create_avwap(
 
 
 def create_rw(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Rolling Window for historical values."""
     from QuantConnect.Indicators import RollingWindow
 
-    period = ind_def.get("period", 2)
-    field = ind_def.get("field", "close")
+    period = getattr(ind_def, "period", 2)
+    field = getattr(ind_def, "field", "close")
 
     return IndicatorResult(
         category=IndicatorCategory.ROLLING_WINDOW,
@@ -442,39 +500,18 @@ def create_rw(
 
 
 def create_vol_sma(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
+    ind_def: Any, algo: QCAlgorithm, symbol: Symbol, resolution: Any
 ) -> IndicatorResult:
     """Create Volume SMA indicator."""
     from QuantConnect.Indicators import SimpleMovingAverage
 
-    period = ind_def.get("period", 20)
+    period = getattr(ind_def, "period", 20)
 
     return IndicatorResult(
         category=IndicatorCategory.VOL_SMA,
         data={
             "sma": SimpleMovingAverage(period),
             "period": period,
-            "symbol": symbol,
-        },
-    )
-
-
-def create_rmm(
-    ind_def: dict[str, Any], algo: QCAlgorithm, symbol: Symbol, resolution: Any
-) -> IndicatorResult:
-    """Create Rolling Min/Max tracker."""
-    from QuantConnect.Indicators import RollingWindow
-
-    period = ind_def.get("period", 20)
-    mode = ind_def.get("mode", "min")
-    field = ind_def.get("field", "close")
-
-    return IndicatorResult(
-        category=IndicatorCategory.ROLLING_MINMAX,
-        data={
-            "window": RollingWindow[float](period),
-            "mode": mode,
-            "field": field,
             "symbol": symbol,
         },
     )
@@ -507,6 +544,14 @@ INDICATOR_CREATORS: dict[str, IndicatorCreator] = {
     "CCI": create_cci,  # Commodity Channel Index
     "OBV": create_obv,  # On-Balance Volume
     "AROON": create_aroon,  # Aroon Oscillator
+    # PercentileRank
+    "PCTILE": create_percentile_rank,  # PercentileRank
+    "PERCENTILERANK": create_percentile_rank,  # Alias
+    # Statistical Indicators
+    "STD": create_std,  # Standard Deviation
+    "VAR": create_var,  # Variance
+    "MEAN": create_mean,  # Mean
+    "MEDIAN": create_median,  # Median
     # Candlestick Patterns (Phase 5)
     "CANDLESTICK": create_candlestick_pattern,
     "CANDLE": create_candlestick_pattern,  # Alias
@@ -514,14 +559,13 @@ INDICATOR_CREATORS: dict[str, IndicatorCreator] = {
     "AVWAP": create_avwap,
     "RW": create_rw,
     "VOL_SMA": create_vol_sma,
-    "RMM": create_rmm,
 }
 
 INDICATOR_TYPES = list(INDICATOR_CREATORS.keys())
 
 
 def create_indicator(
-    ind_def: dict[str, Any],
+    ind_def: Any,
     algo: QCAlgorithm,
     symbol: Symbol,
     resolution: Any,
@@ -529,7 +573,7 @@ def create_indicator(
     """Create an indicator from its definition.
 
     Args:
-        ind_def: Indicator definition dict with 'type', 'id', and params
+        ind_def: Typed Indicator model with 'type', 'id', and params as attributes
         algo: QCAlgorithm instance
         symbol: Symbol for the indicator
         resolution: Resolution for the indicator
@@ -540,7 +584,7 @@ def create_indicator(
     Raises:
         ValueError: If indicator type is unknown
     """
-    ind_type = ind_def.get("type")
+    ind_type = getattr(ind_def, "type", None)
     creator = INDICATOR_CREATORS.get(ind_type)
 
     if not creator:
@@ -569,8 +613,6 @@ def update_indicator(
         _update_rolling_window(data, bar)
     elif category == IndicatorCategory.VOL_SMA:
         _update_vol_sma(data, bar, time)
-    elif category == IndicatorCategory.ROLLING_MINMAX:
-        _update_rolling_minmax(data, bar)
     elif category == IndicatorCategory.AVWAP:
         _update_avwap(data, bar, time)
     # LEAN indicators are auto-updated, no action needed
@@ -594,21 +636,6 @@ def _update_rolling_window(data: dict[str, Any], bar: TradeBar) -> None:
 def _update_vol_sma(data: dict[str, Any], bar: TradeBar, time: Any) -> None:
     """Update volume SMA with current volume."""
     data["sma"].Update(time, float(bar.Volume))
-
-
-def _update_rolling_minmax(data: dict[str, Any], bar: TradeBar) -> None:
-    """Update rolling min/max with price field."""
-    field = data["field"]
-    window = data["window"]
-
-    if field == "close":
-        window.Add(bar.Close)
-    elif field == "open":
-        window.Add(bar.Open)
-    elif field == "high":
-        window.Add(bar.High)
-    elif field == "low":
-        window.Add(bar.Low)
 
 
 def _update_avwap(data: dict[str, Any], bar: TradeBar, time: Any) -> None:
@@ -679,9 +706,6 @@ def is_indicator_ready(category: IndicatorCategory, indicator_or_data: Any) -> b
     elif category == IndicatorCategory.VOL_SMA:
         return indicator_or_data["sma"].IsReady
 
-    elif category == IndicatorCategory.ROLLING_MINMAX:
-        return indicator_or_data["window"].IsReady
-
     elif category == IndicatorCategory.AVWAP:
         return indicator_or_data["cum_volume"] > 0
 
@@ -730,15 +754,6 @@ def resolve_indicator_value(
 
     elif category == IndicatorCategory.VOL_SMA:
         return indicator_or_data["sma"].Current.Value
-
-    elif category == IndicatorCategory.ROLLING_MINMAX:
-        window = indicator_or_data["window"]
-        if window.IsReady:
-            if indicator_or_data["mode"] == "min":
-                return min(list(window))
-            else:  # max
-                return max(list(window))
-        return 0.0
 
     elif category == IndicatorCategory.AVWAP:
         if field == "std_dev":

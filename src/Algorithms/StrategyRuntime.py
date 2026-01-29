@@ -223,7 +223,6 @@ class StrategyRuntime(QCAlgorithm):
         self.indicators = {}
         self.rolling_windows = {}  # For RollingWindow indicators
         self.vol_sma_indicators = {}  # For volume SMA indicators
-        self.rolling_minmax = {}  # For rolling min/max trackers
         self.avwap_trackers = {}  # For AVWAP (anchored VWAP) trackers
         self._create_indicators()
 
@@ -301,7 +300,6 @@ class StrategyRuntime(QCAlgorithm):
             indicators=self.indicators,
             rolling_windows=self.rolling_windows,
             vol_sma_indicators=self.vol_sma_indicators,
-            rolling_minmax=self.rolling_minmax,
             avwap_trackers=self.avwap_trackers,
             log=self.Log,
             runtime=self,
