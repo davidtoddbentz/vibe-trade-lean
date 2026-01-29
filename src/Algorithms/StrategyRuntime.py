@@ -27,7 +27,7 @@ from vibe_trade_shared.models.ir import (
     StateOp,
 )
 from conditions import evaluate_condition as registry_evaluate_condition
-from trades import close_lots, close_lots_at_end, generate_report
+from trades import close_lots_at_end, generate_report
 from position import (
     can_accumulate,
     compute_overlay_scale,
@@ -432,12 +432,11 @@ class StrategyRuntime(QCAlgorithm):
 
     def _evaluate_entry(self, bar):
         """Evaluate entry rule and execute if conditions met."""
-        self.tracking.current_lots, new_entry_bar = execute_entry(
+        new_entry_bar = execute_entry(
             entry_rule=self.entry_rule,
             evaluate_condition=self._evaluate_condition,
             bar=bar,
-            current_lots=self.tracking.current_lots,
-            bar_count=self.tracking.bar_count,
+            tracking=self.tracking,
             ctx=self._exec_ctx,
             current_time=self.Time,
             execute_action_func=lambda action, b=None: self._execute_action(action, b),
@@ -450,19 +449,15 @@ class StrategyRuntime(QCAlgorithm):
 
     def _evaluate_exits(self, bar):
         """Evaluate exit rules in priority order."""
-        closed_lots_list = []
-        self.tracking.current_lots, closed_lots_list = execute_exit(
+        execute_exit(
             exit_rules=self.exit_rules,
             evaluate_condition=self._evaluate_condition,
             bar=bar,
-            current_lots=self.tracking.current_lots,
-            bar_count=self.tracking.bar_count,
+            tracking=self.tracking,
             ctx=self._exec_ctx,
             current_time=self.Time,
-            close_lots_func=close_lots,
             execute_action_func=lambda action: self._execute_action(action),
         )
-        self.tracking.trades.extend(closed_lots_list)
 
     def _run_on_bar_invested(self, bar):
         """Run on_bar_invested state operations."""

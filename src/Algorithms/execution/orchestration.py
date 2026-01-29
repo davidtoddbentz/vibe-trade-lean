@@ -16,9 +16,9 @@ from vibe_trade_shared.models.ir import (
     Condition,
     StateOp,
 )
-from execution.types import Lot, ClosedLot, FillInfo
+from execution.types import Lot, TrackingState
 from execution.context import ExecutionContext
-from trades import create_lot
+from trades import create_lot, close_lots
 from position import apply_scale_in, apply_overlay_scale, compute_overlay_scale
 
 
@@ -26,22 +26,20 @@ def execute_entry(
     entry_rule: EntryRule | None,
     evaluate_condition: Callable[[Condition, Any], bool],
     bar: Any,
-    current_lots: list[Lot],
-    bar_count: int,
+    tracking: TrackingState,
     ctx: ExecutionContext,
     current_time: Any,
     execute_action_func: Callable,
     execute_state_op: Callable[[StateOp, Any], None],
     overlays: list[OverlayRule],
-) -> tuple[list[Lot], int | None]:
+) -> int | None:
     """Execute entry if condition is met.
 
     Args:
         entry_rule: EntryRule from IR
         evaluate_condition: Function to evaluate conditions
         bar: Current bar data
-        current_lots: List of open lots (will be modified)
-        bar_count: Current bar index
+        tracking: Tracking state container (will be modified)
         ctx: ExecutionContext bundle for LEAN primitives
         current_time: Current timestamp
         execute_action_func: Function to execute action
@@ -49,14 +47,14 @@ def execute_entry(
         overlays: List of OverlayRule from IR
 
     Returns:
-        Tuple of (updated_current_lots, updated_last_entry_bar)
+        Updated last_entry_bar or None if no entry fired
     """
     if not entry_rule:
-        return current_lots, None
+        return None
 
     result = evaluate_condition(entry_rule.condition, bar)
     if not result:
-        return current_lots, None
+        return None
 
     action = entry_rule.action  # Typed EntryAction
 
@@ -65,7 +63,7 @@ def execute_entry(
 
     # Apply scale_in factor if in scale_in mode with existing lots
     if isinstance(action, SetHoldingsAction):
-        action = apply_scale_in(action, current_lots, ctx.log)
+        action = apply_scale_in(action, tracking.current_lots, ctx.log)
 
     # Apply overlay scaling to position size
     overlay_scale = compute_overlay_scale(
@@ -99,67 +97,61 @@ def execute_entry(
     entry_fee = fill.fee if fill else 0.0
 
     lot = create_lot(
-        lot_id=len(current_lots),
+        lot_id=len(tracking.current_lots),
         symbol=str(ctx.symbol),
         direction=direction,
         entry_time=current_time,
         entry_price=entry_price,
-        entry_bar=bar_count,
+        entry_bar=tracking.bar_count,
         quantity=lot_quantity,
         entry_fee=entry_fee,
     )
-    current_lots.append(lot)
-    last_entry_bar = bar_count
+    tracking.current_lots.append(lot)
+    last_entry_bar = tracking.bar_count
 
     # Run on_fill hooks (EntryRule is typed; on_fill is list[StateOp])
     on_fill = entry_rule.on_fill or []
     for op in on_fill:
         execute_state_op(op, bar)
 
-    lot_num = len(current_lots)
+    lot_num = len(tracking.current_lots)
     if lot_num > 1:
         ctx.log(f"🟢 ENTRY (lot #{lot_num}) @ ${entry_price:.2f} | qty: {lot_quantity:.6f}")
     else:
         ctx.log(f"🟢 ENTRY @ ${entry_price:.2f}")
 
-    return current_lots, last_entry_bar
+    return last_entry_bar
 
 
 def execute_exit(
     exit_rules: list[ExitRule],
     evaluate_condition: Callable[[Condition, Any], bool],
     bar: Any,
-    current_lots: list[Lot],
-    bar_count: int,
+    tracking: TrackingState,
     ctx: ExecutionContext,
     current_time: Any,
-    close_lots_func: Callable[..., list[ClosedLot]],
     execute_action_func: Callable,
-) -> tuple[list[Lot], list[ClosedLot]]:
+) -> None:
     """Execute exit if condition is met.
 
     Args:
         exit_rules: List of ExitRule from IR (sorted by priority)
         evaluate_condition: Function to evaluate conditions
         bar: Current bar data
-        current_lots: List of open lots (will be cleared if exit triggers)
-        bar_count: Current bar index
+        tracking: Tracking state container (will be modified)
         ctx: ExecutionContext bundle for LEAN primitives
         current_time: Current timestamp
-        close_lots_func: Function to close lots
         execute_action_func: Function to execute action
 
     Returns:
-        Tuple of (updated_current_lots, closed_lots_list)
+        None
     """
-    closed_lots_list: list[ClosedLot] = []
-
     # Sort by priority (lower priority number = higher priority)
     sorted_exits = sorted(exit_rules, key=lambda x: x.priority or 0)
 
     for exit_rule in sorted_exits:
         if evaluate_condition(exit_rule.condition, bar):
-            num_lots = len(current_lots) if current_lots else 0
+            num_lots = len(tracking.current_lots) if tracking.current_lots else 0
 
             # Execute exit action first to get LEAN's actual fill price
             execute_action_func(exit_rule.action)
@@ -169,24 +161,24 @@ def execute_exit(
             exit_price = fill.price if fill else float(bar.Close)
             exit_fee = fill.fee if fill else 0.0
 
-            if current_lots:
+            if tracking.current_lots:
                 exit_reason = exit_rule.id or "unknown"
 
                 # Distribute exit fee across lots proportionally
-                total_qty = sum(lot.quantity for lot in current_lots)
-                for lot in current_lots:
+                total_qty = sum(lot.quantity for lot in tracking.current_lots)
+                for lot in tracking.current_lots:
                     lot_qty = lot.quantity
                     lot._exit_fee_share = exit_fee * (lot_qty / total_qty) if total_qty > 0 else 0.0
 
-                closed_lots = close_lots_func(
-                    lots=current_lots,
+                closed_lots = close_lots(
+                    lots=tracking.current_lots,
                     exit_price=exit_price,
                     exit_time=current_time,
-                    exit_bar=bar_count,
+                    exit_bar=tracking.bar_count,
                     exit_reason=exit_reason,
                 )
-                closed_lots_list.extend(closed_lots)
-                current_lots = []
+                tracking.trades.extend(closed_lots)
+                tracking.current_lots = []
 
             exit_id = exit_rule.id or "unknown"
             if num_lots > 1:
@@ -195,4 +187,4 @@ def execute_exit(
                 ctx.log(f"🔴 EXIT ({exit_id}) @ ${exit_price:.2f}")
             break  # Only execute first matching exit
 
-    return current_lots, closed_lots_list
+    return None
