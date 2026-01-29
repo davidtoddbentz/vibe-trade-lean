@@ -30,7 +30,6 @@ from conditions import evaluate_condition as registry_evaluate_condition
 from trades import close_lots_at_end, generate_report
 from position import (
     can_accumulate,
-    compute_overlay_scale,
     track_equity,
 )
 from gates import evaluate_gates
@@ -406,15 +405,6 @@ class StrategyRuntime(QCAlgorithm):
             bar=bar,
         )
 
-    def _compute_overlay_scale(self, bar) -> float:
-        """Compute combined overlay scaling factor for position sizing."""
-        return compute_overlay_scale(
-            overlays=self.overlays,
-            evaluate_condition_func=self._evaluate_condition,
-            bar=bar,
-            log_func=self.Log,
-        )
-
     def _can_accumulate(self) -> bool:
         """Check if position policy allows another entry while invested."""
         return can_accumulate(
@@ -439,7 +429,7 @@ class StrategyRuntime(QCAlgorithm):
             tracking=self.tracking,
             ctx=self._exec_ctx,
             current_time=self.Time,
-            execute_action_func=lambda action, b=None: self._execute_action(action, b),
+            execute_action_func=self._execute_action,
             execute_state_op=self._execute_state_op,
             overlays=self.overlays,
         )
@@ -456,7 +446,7 @@ class StrategyRuntime(QCAlgorithm):
             tracking=self.tracking,
             ctx=self._exec_ctx,
             current_time=self.Time,
-            execute_action_func=lambda action: self._execute_action(action),
+            execute_action_func=self._execute_action,
         )
 
     def _run_on_bar_invested(self, bar):
