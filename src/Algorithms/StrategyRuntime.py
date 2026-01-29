@@ -36,7 +36,8 @@ from position import (
 from gates import evaluate_gates
 from symbols import add_symbol, normalize_symbol, get_symbol_obj
 from ir import load_ir_from_file
-from execution import execute_action, execute_entry, execute_exit
+from execution.actions import execute_action
+from execution.orchestration import execute_entry, execute_exit
 from execution.context import ExecutionContext
 from execution.types import FillInfo, TrackingState
 from initialization import setup_data_folder, setup_dates, setup_symbols, setup_rules, setup_trading_costs

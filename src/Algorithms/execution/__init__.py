@@ -1,11 +1,10 @@
-"""Entry/exit execution orchestration for StrategyRuntime.
+"""Execution layer types and context for StrategyRuntime.
 
-Phase 12: Extracted from StrategyRuntime.
+Note: orchestration and actions are imported directly by their consumers
+to avoid circular imports (orchestration → trades → execution.types).
 """
 
-from .actions import execute_action
 from .context import ExecutionContext
-from .orchestration import execute_entry, execute_exit
 from .types import (
     ClosedLot,
     EquityPoint,
@@ -23,7 +22,4 @@ __all__ = [
     "Lot",
     "TrackingState",
     "TradeStats",
-    "execute_action",
-    "execute_entry",
-    "execute_exit",
 ]
