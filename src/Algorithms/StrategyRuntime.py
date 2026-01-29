@@ -200,7 +200,7 @@ class StrategyRuntime(QCAlgorithm):
         self.ir = StrategyIR.model_validate(ir_dict)
 
         # Set resolution (must be before _add_symbol which uses it)
-        resolution_str = getattr(self.ir, "resolution", "Hour") or "Hour"
+        resolution_str = self.ir.resolution or "Hour"
         self.resolution = getattr(Resolution, resolution_str.capitalize(), Resolution.Hour)
 
         # Set up symbols
@@ -286,7 +286,7 @@ class StrategyRuntime(QCAlgorithm):
 
         self.Log("✅ StrategyRuntime initialized")
         self.Log("   🔄 Using refactored Phase 12 code (2026-01-26)")
-        self.Log(f"   Strategy: {getattr(self.ir, 'strategy_name', 'Unknown') or 'Unknown'}")
+        self.Log(f"   Strategy: {self.ir.strategy_name or 'Unknown'}")
         self.Log(f"   Symbol: {self.symbol}")
         self.Log(f"   Indicators: {len(self.indicators)}")
         self.Log(f"   Pydantic: v{PYDANTIC_VERSION} ✓")
