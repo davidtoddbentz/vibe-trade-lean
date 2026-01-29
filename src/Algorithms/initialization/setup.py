@@ -8,15 +8,16 @@ This marker confirms the refactored code is being used.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 from AlgorithmImports import Resolution
+from vibe_trade_shared.models.ir import StrategyIR
 
 
 def setup_data_folder(
     data_folder_param: str | None,
     custom_data_class: Any,
-    log_func: Any,
-    debug_func: Any,
+    log_func: Callable[[str], None],
+    debug_func: Callable[[str], None],
 ) -> None:
     """Set up data folder and debug logging.
 
@@ -63,10 +64,10 @@ def setup_dates(
     end_date_str: str | None,
     initial_cash_str: str | None,
     trading_start_str: str | None,
-    set_start_date_func: Any,
-    set_end_date_func: Any,
-    set_cash_func: Any,
-    debug_func: Any,
+    set_start_date_func: Callable,
+    set_end_date_func: Callable,
+    set_cash_func: Callable,
+    debug_func: Callable[[str], None],
 ) -> tuple[Any, float]:
     """Set up algorithm dates and initial cash.
 
@@ -130,10 +131,10 @@ def setup_dates(
 
 
 def setup_symbols(
-    ir: Any,
-    add_symbol_func: Any,
-    normalize_symbol_func: Any,
-    log_func: Any,
+    ir: StrategyIR,
+    add_symbol_func: Callable,
+    normalize_symbol_func: Callable[[str], str],
+    log_func: Callable[[str], None],
 ) -> tuple[Any, dict[str, Any]]:
     """Set up primary and additional symbols.
 
@@ -146,11 +147,11 @@ def setup_symbols(
     Returns:
         Tuple of (primary_symbol, symbols_dict)
     """
-    symbol_str = getattr(ir, "symbol", "BTC-USD") or "BTC-USD"
+    symbol_str = ir.symbol or "BTC-USD"
     primary_symbol = add_symbol_func(symbol_str)
 
     symbols_dict = {normalize_symbol_func(symbol_str): primary_symbol}
-    for additional_sym in getattr(ir, "additional_symbols", []) or []:
+    for additional_sym in ir.additional_symbols or []:
         sym_obj = add_symbol_func(additional_sym)
         symbols_dict[normalize_symbol_func(additional_sym)] = sym_obj
         log_func(f"   Added additional symbol: {additional_sym}")
@@ -158,7 +159,7 @@ def setup_symbols(
     return primary_symbol, symbols_dict
 
 
-def setup_rules(ir: Any) -> dict[str, Any]:
+def setup_rules(ir: StrategyIR) -> dict[str, Any]:
     """Extract rules from IR.
 
     Args:
@@ -169,15 +170,15 @@ def setup_rules(ir: Any) -> dict[str, Any]:
     """
     return {
         "entry_rule": ir.entry,
-        "exit_rules": getattr(ir, "exits", []) or [],
-        "gates": getattr(ir, "gates", []) or [],
-        "overlays": getattr(ir, "overlays", []) or [],
-        "on_bar_ops": getattr(ir, "on_bar", []) or [],
-        "on_bar_invested_ops": getattr(ir, "on_bar_invested", []) or [],
+        "exit_rules": ir.exits or [],
+        "gates": ir.gates or [],
+        "overlays": ir.overlays or [],
+        "on_bar_ops": ir.on_bar or [],
+        "on_bar_invested_ops": ir.on_bar_invested or [],
     }
 
 
-def setup_trading_costs(ir: Any, log_func: Any) -> dict[str, float]:
+def setup_trading_costs(ir: StrategyIR, log_func: Callable[[str], None]) -> dict[str, float]:
     """Configure trading costs from IR.
 
     Args:
@@ -187,8 +188,8 @@ def setup_trading_costs(ir: Any, log_func: Any) -> dict[str, float]:
     Returns:
         Dict with fee_pct and slippage_pct
     """
-    fee_pct = getattr(ir, "fee_pct", 0.0) or 0.0
-    slippage_pct = getattr(ir, "slippage_pct", 0.0) or 0.0
+    fee_pct = ir.fee_pct or 0.0
+    slippage_pct = ir.slippage_pct or 0.0
 
     if fee_pct > 0 or slippage_pct > 0:
         log_func(f"   Trading costs: fee={fee_pct}%, slippage={slippage_pct}%")
@@ -196,23 +197,3 @@ def setup_trading_costs(ir: Any, log_func: Any) -> dict[str, float]:
         log_func("   No trading costs configured")
 
     return {"fee_pct": fee_pct, "slippage_pct": slippage_pct}
-
-
-def setup_tracking(initial_cash: float) -> dict[str, Any]:
-    """Initialize trade tracking structures.
-
-    Args:
-        initial_cash: Initial cash amount
-
-    Returns:
-        Dict with trades, current_lots, last_entry_bar, equity_curve, peak_equity, max_drawdown, bar_count
-    """
-    return {
-        "trades": [],
-        "current_lots": [],
-        "last_entry_bar": None,
-        "equity_curve": [],
-        "peak_equity": initial_cash,
-        "max_drawdown": 0.0,
-        "bar_count": 0,
-    }

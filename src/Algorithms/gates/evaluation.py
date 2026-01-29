@@ -5,12 +5,14 @@ Phase 12: Extracted from StrategyRuntime.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
+
+from vibe_trade_shared.models.ir import GateRule, Condition
 
 
 def evaluate_gates(
-    gates: list[Any],
-    evaluate_condition_func: Any,
+    gates: list[GateRule],
+    evaluate_condition_func: Callable[[Condition, Any], bool],
     bar: Any,
 ) -> bool:
     """Evaluate gate conditions. Returns True if all gates pass.
@@ -25,7 +27,7 @@ def evaluate_gates(
     """
     for gate in gates:
         condition = gate.condition
-        mode = getattr(gate, "mode", "allow") or "allow"
+        mode = gate.mode or "allow"
 
         result = evaluate_condition_func(condition, bar)
 

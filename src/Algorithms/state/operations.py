@@ -5,7 +5,7 @@ Phase 12: Extracted from StrategyRuntime.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from vibe_trade_shared.models.ir import (
     SetStateAction,
@@ -20,10 +20,10 @@ from vibe_trade_shared.models.ir import (
 def execute_state_op(
     op: StateOp,
     bar: Any,
-    state: dict[str, Any],
-    resolve_value_func: Any,
-    evaluate_condition_func: Any,
-    log_func: Any,
+    state: dict[str, float],
+    resolve_value_func: Callable,
+    evaluate_condition_func: Callable,
+    log_func: Callable[[str], None],
 ) -> None:
     """Execute a state operation.
 

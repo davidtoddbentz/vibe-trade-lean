@@ -5,14 +5,15 @@ Phase 12: Extracted from StrategyRuntime.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
-from vibe_trade_shared.models.ir import SetHoldingsAction, EntryAction
+from vibe_trade_shared.models.ir import SetHoldingsAction, EntryRule, OverlayRule, Condition
+from execution.types import Lot
 
 
 def can_accumulate(
-    entry_rule: Any,
-    current_lots: list[Any],
+    entry_rule: EntryRule | None,
+    current_lots: list[Lot],
     bar_count: int,
     last_entry_bar: int | None,
 ) -> bool:
@@ -64,8 +65,8 @@ def can_accumulate(
 
 def apply_scale_in(
     action: SetHoldingsAction,
-    current_lots: list[Any],
-    log_func: Any,
+    current_lots: list[Lot],
+    log_func: Callable[[str], None],
 ) -> SetHoldingsAction:
     """Apply scale-in factor if in scale_in mode with existing lots.
 
@@ -104,7 +105,7 @@ def apply_scale_in(
 def apply_overlay_scale(
     action: SetHoldingsAction,
     overlay_scale: float,
-    log_func: Any,
+    log_func: Callable[[str], None],
 ) -> SetHoldingsAction:
     """Apply overlay scaling to position size.
 
@@ -128,10 +129,10 @@ def apply_overlay_scale(
 
 
 def compute_overlay_scale(
-    overlays: list[Any],
-    evaluate_condition_func: Any,
+    overlays: list[OverlayRule],
+    evaluate_condition_func: Callable[[Condition, Any], bool],
     bar: Any,
-    log_func: Any,
+    log_func: Callable[[str], None],
 ) -> float:
     """Compute combined overlay scaling factor for position sizing.
 
@@ -149,13 +150,13 @@ def compute_overlay_scale(
     """
     scale = 1.0
     for overlay in overlays:
-        target_roles = getattr(overlay, "target_roles", ["entry", "exit"]) or ["entry", "exit"]
+        target_roles = overlay.target_roles or ["entry", "exit"]
         if "entry" not in target_roles:
             continue
 
         if evaluate_condition_func(overlay.condition, bar):
-            scale_size = getattr(overlay, "scale_size_frac", 1.0) or 1.0
+            scale_size = overlay.scale_size_frac or 1.0
             scale *= scale_size
-            log_func(f"   Overlay '{getattr(overlay, 'id', 'unknown')}' active: scale={scale_size}")
+            log_func(f"   Overlay '{overlay.id or 'unknown'}' active: scale={scale_size}")
 
     return scale

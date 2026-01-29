@@ -8,7 +8,6 @@ from .setup import (
     setup_dates,
     setup_symbols,
     setup_rules,
-    setup_tracking,
     setup_trading_costs,
 )
 
@@ -17,6 +16,5 @@ __all__ = [
     "setup_dates",
     "setup_symbols",
     "setup_rules",
-    "setup_tracking",
     "setup_trading_costs",
 ]

@@ -486,17 +486,7 @@ class StrategyRuntime(QCAlgorithm):
 
     def _execute_action(self, action: EntryAction | ExitAction, bar=None):
         """Execute an action from IR."""
-        execute_action(
-            action=action,
-            symbol=self.symbol,
-            portfolio=self.Portfolio,
-            securities=self.Securities,
-            set_holdings_func=self.SetHoldings,
-            market_order_func=self.MarketOrder,
-            liquidate_func=self.Liquidate,
-            log_func=self.Log,
-            bar=bar,
-        )
+        execute_action(action=action, ctx=self._exec_ctx, bar=bar)
 
     def _resolve_value(self, value_ref, bar):
         """Resolve a ValueRef to a float for state ops and other runtime use."""

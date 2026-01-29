@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 from AlgorithmImports import Resolution
+from execution.types import EquityPoint
 
 
 def track_equity(
@@ -17,7 +18,7 @@ def track_equity(
     current_time: Any,
     bar_count: int,
     resolution: Any,
-    equity_curve: list[dict[str, Any]],
+    equity_curve: list[EquityPoint],
     peak_equity: float,
     max_drawdown: float,
 ) -> tuple[float, float]:
@@ -55,12 +56,14 @@ def track_equity(
         sample_interval = 1   # Daily or other: every bar
 
     if bar_count == 0 or bar_count % sample_interval == 0:
-        equity_curve.append({
-            "time": str(current_time),
-            "equity": float(equity),
-            "cash": float(cash),
-            "holdings": float(holdings),
-            "drawdown": float(drawdown),
-        })
+        equity_curve.append(
+            EquityPoint(
+                time=str(current_time),
+                equity=float(equity),
+                cash=float(cash),
+                holdings=float(holdings),
+                drawdown=float(drawdown),
+            )
+        )
 
     return new_peak, new_max_drawdown
