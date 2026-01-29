@@ -9,15 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from vibe_trade_shared.models.ir import Condition
+
 
 @dataclass
 class EvalContext:
     """Minimal context needed by condition evaluators."""
 
     resolve_value: Callable[[Any, Any], float]  # (ValueRef, bar) -> float
-    evaluate_condition: Callable[[Any, Any], bool]  # (condition dict, bar) -> bool; for recursion
-    state: dict[str, Any]
-    current_time: Any
+    evaluate_condition: Callable[[Condition, Any], bool]  # (Condition, bar) -> bool; for recursion
+    state: dict[str, float]
+    current_time: Any  # datetime at runtime
     cross_state: dict[str, tuple[float, float]]  # key -> (left_val, right_val) for cross detection
     rolling_windows: dict[str, Any]  # id -> { "window": RollingWindow-like } for gap, etc.
     indicators: dict[str, Any]  # id -> LEAN indicator (includes MAX/MIN for level detection)
