@@ -37,7 +37,9 @@ from gates import evaluate_gates
 from symbols import add_symbol, normalize_symbol, get_symbol_obj
 from ir import load_ir_from_file
 from execution import execute_action, execute_entry, execute_exit
-from initialization import setup_data_folder, setup_dates, setup_symbols, setup_rules, setup_tracking, setup_trading_costs
+from execution.context import ExecutionContext
+from execution.types import FillInfo, TrackingState
+from initialization import setup_data_folder, setup_dates, setup_symbols, setup_rules, setup_trading_costs
 from state import execute_state_op as _execute_state_op_func
 
 # Pydantic is required - StrategyIR.model_validate() is used
@@ -252,17 +254,28 @@ class StrategyRuntime(QCAlgorithm):
         self.on_bar_ops = rules["on_bar_ops"]
 
         # Trade tracking for output (lot-based for accumulation support)
-        tracking = setup_tracking(initial_cash)
-        self.trades = tracking["trades"]
-        self.current_lots = tracking["current_lots"]
-        self.last_entry_bar = tracking["last_entry_bar"]
-        self.equity_curve = tracking["equity_curve"]
-        self.peak_equity = tracking["peak_equity"]
-        self.max_drawdown = tracking["max_drawdown"]
-        self.bar_count = tracking["bar_count"]
+        tracking = TrackingState(peak_equity=initial_cash)
+        self.trades = tracking.trades
+        self.current_lots = tracking.current_lots
+        self.last_entry_bar = tracking.last_entry_bar
+        self.equity_curve = tracking.equity_curve
+        self.peak_equity = tracking.peak_equity
+        self.max_drawdown = tracking.max_drawdown
+        self.bar_count = tracking.bar_count
 
         # Last fill info from LEAN's OnOrderEvent (for accurate lot pricing)
         self._last_fill = None
+        # ExecutionContext bundles LEAN primitives for execution functions
+        self._exec_ctx = ExecutionContext(
+            symbol=self.symbol,
+            portfolio=self.Portfolio,
+            securities=self.Securities,
+            set_holdings=self.SetHoldings,
+            market_order=self.MarketOrder,
+            liquidate=self.Liquidate,
+            log=self.Log,
+            get_last_fill=self._get_and_clear_last_fill,
+        )
 
         # Crossover detection state
         self._cross_prev = {}  # Stores previous (left, right) values per condition
@@ -417,7 +430,7 @@ class StrategyRuntime(QCAlgorithm):
             last_entry_bar=self.last_entry_bar,
         )
 
-    def _get_and_clear_last_fill(self):
+    def _get_and_clear_last_fill(self) -> FillInfo | None:
         """Return last fill info from OnOrderEvent and clear it."""
         fill = self._last_fill
         self._last_fill = None
@@ -427,18 +440,15 @@ class StrategyRuntime(QCAlgorithm):
         """Evaluate entry rule and execute if conditions met."""
         self.current_lots, new_entry_bar = execute_entry(
             entry_rule=self.entry_rule,
-            evaluate_condition_func=self._evaluate_condition,
+            evaluate_condition=self._evaluate_condition,
             bar=bar,
             current_lots=self.current_lots,
             bar_count=self.bar_count,
-            symbol=self.symbol,
-            portfolio=self.Portfolio,
+            ctx=self._exec_ctx,
             current_time=self.Time,
             execute_action_func=lambda action, b=None: self._execute_action(action, b),
-            execute_state_op_func=self._execute_state_op,
+            execute_state_op=self._execute_state_op,
             overlays=self.overlays,
-            log_func=self.Log,
-            get_last_fill=self._get_and_clear_last_fill,
         )
         # Only update last_entry_bar when an entry actually fired (None = no entry)
         if new_entry_bar is not None:
@@ -449,22 +459,14 @@ class StrategyRuntime(QCAlgorithm):
         closed_lots_list = []
         self.current_lots, closed_lots_list = execute_exit(
             exit_rules=self.exit_rules,
-            evaluate_condition_func=self._evaluate_condition,
+            evaluate_condition=self._evaluate_condition,
             bar=bar,
             current_lots=self.current_lots,
             bar_count=self.bar_count,
-            symbol=self.symbol,
+            ctx=self._exec_ctx,
             current_time=self.Time,
-            close_lots_func=lambda lots, exit_price, exit_time, exit_bar, exit_reason: close_lots(
-                lots=lots,
-                exit_price=exit_price,
-                exit_time=exit_time,
-                exit_bar=exit_bar,
-                exit_reason=exit_reason,
-            ),
+            close_lots_func=close_lots,
             execute_action_func=lambda action: self._execute_action(action),
-            log_func=self.Log,
-            get_last_fill=self._get_and_clear_last_fill,
         )
         self.trades.extend(closed_lots_list)
 
@@ -538,11 +540,11 @@ class StrategyRuntime(QCAlgorithm):
             pass
 
         # Store fill info for the lot tracker to pick up
-        self._last_fill = {
-            "price": fill_price,
-            "quantity": fill_qty,
-            "fee": order_fee,
-        }
+        self._last_fill = FillInfo(
+            price=fill_price,
+            quantity=fill_qty,
+            fee=order_fee,
+        )
 
     def OnEndOfAlgorithm(self):
         """Called when algorithm ends."""
@@ -577,8 +579,8 @@ class StrategyRuntime(QCAlgorithm):
             initial_cash=initial_cash,
             final_equity=final_equity,
             max_drawdown=self.max_drawdown,
-            strategy_id=getattr(self.ir, "strategy_id", "unknown") or "unknown",
-            strategy_name=getattr(self.ir, "strategy_name", "Unknown") or "Unknown",
+            strategy_id=self.ir.strategy_id or "unknown",
+            strategy_name=self.ir.strategy_name or "Unknown",
             symbol=str(self.symbol),
             log_func=self.Log,
         )
@@ -613,10 +615,10 @@ class StrategyRuntime(QCAlgorithm):
         if self.trades:
             self.Log("TRADE LOG")
             for i, t in enumerate(self.trades):
-                exit_price = t["exit_price"]
-                pnl_pct = t["pnl_percent"]
-                exit_reason = t["exit_reason"]
-                self.Log(f"  #{i+1}: {t['direction'].upper()} @ ${t['entry_price']:.2f} -> ${exit_price:.2f} | P&L: {pnl_pct:+.2f}% | Exit: {exit_reason}")
+                self.Log(
+                    f"  #{i+1}: {t.direction.upper()} @ ${t.entry_price:.2f} -> "
+                    f"${t.exit_price:.2f} | P&L: {t.pnl_percent:+.2f}% | Exit: {t.exit_reason}"
+                )
             self.Log("")
 
         self.Log(f"{'='*60}")
