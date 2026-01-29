@@ -9,6 +9,7 @@ from .tracking import (
     close_lots_at_end,
     calculate_trade_stats,
     generate_report,
+    split_lot,
 )
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "close_lots_at_end",
     "calculate_trade_stats",
     "generate_report",
+    "split_lot",
 ]
