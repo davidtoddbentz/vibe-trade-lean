@@ -21,13 +21,12 @@ def execute_entry(
     symbol: Any,
     portfolio: Any,
     current_time: Any,
-    apply_slippage_func: Any,
-    calculate_fee_func: Any,
     execute_action_func: Any,
     execute_state_op_func: Any,
     overlays: list[Any],
     log_func: Any,
-) -> tuple[list[Any], int]:
+    get_last_fill: Any = None,
+) -> tuple[list[Any], int | None]:
     """Execute entry if condition is met.
 
     Args:
@@ -39,22 +38,21 @@ def execute_entry(
         symbol: Trading symbol
         portfolio: LEAN Portfolio object
         current_time: Current timestamp
-        apply_slippage_func: Function to apply slippage
-        calculate_fee_func: Function to calculate fee
         execute_action_func: Function to execute action
         execute_state_op_func: Function to execute state op
         overlays: List of OverlayRule from IR
         log_func: Logging function
+        get_last_fill: Optional callable returning last fill dict {price, fee}
 
     Returns:
         Tuple of (updated_current_lots, updated_last_entry_bar)
     """
     if not entry_rule:
-        return current_lots, -999
+        return current_lots, None
 
     result = evaluate_condition_func(entry_rule.condition, bar)
     if not result:
-        return current_lots, -999
+        return current_lots, None
 
     action = entry_rule.action  # Typed EntryAction
 
@@ -75,7 +73,7 @@ def execute_entry(
     if isinstance(action, SetHoldingsAction):
         action = apply_overlay_scale(action, overlay_scale, log_func)
 
-    # Execute action (modifies portfolio)
+    # Execute action (modifies portfolio, triggers OnOrderEvent synchronously)
     execute_action_func(action, bar)
 
     # Calculate lot quantity (delta from before)
@@ -91,11 +89,10 @@ def execute_entry(
         allocation = 0.95  # Default fallback
     direction = "short" if allocation < 0 or qty_after < 0 else "long"
 
-    # Track lot with slippage-adjusted entry price
-    is_buy_entry = (direction == "long")
-    entry_price = apply_slippage_func(float(bar.Close), is_buy_entry)
-    entry_value = entry_price * lot_quantity
-    entry_fee = calculate_fee_func(entry_value)
+    # Use LEAN's actual fill price/fee if available, else fall back to bar close
+    fill = get_last_fill() if get_last_fill else None
+    entry_price = fill["price"] if fill else float(bar.Close)
+    entry_fee = fill["fee"] if fill else 0.0
 
     lot = create_lot(
         lot_id=len(current_lots),
@@ -117,9 +114,9 @@ def execute_entry(
 
     lot_num = len(current_lots)
     if lot_num > 1:
-        log_func(f"🟢 ENTRY (lot #{lot_num}) @ ${bar.Close:.2f} | qty: {lot_quantity:.6f}")
+        log_func(f"🟢 ENTRY (lot #{lot_num}) @ ${entry_price:.2f} | qty: {lot_quantity:.6f}")
     else:
-        log_func(f"🟢 ENTRY @ ${bar.Close:.2f}")
+        log_func(f"🟢 ENTRY @ ${entry_price:.2f}")
 
     return current_lots, last_entry_bar
 
@@ -135,6 +132,7 @@ def execute_exit(
     close_lots_func: Any,
     execute_action_func: Any,
     log_func: Any,
+    get_last_fill: Any = None,
 ) -> tuple[list[Any], list[Any]]:
     """Execute exit if condition is met.
 
@@ -149,6 +147,7 @@ def execute_exit(
         close_lots_func: Function to close lots
         execute_action_func: Function to execute action
         log_func: Logging function
+        get_last_fill: Optional callable returning last fill dict {price, fee}
 
     Returns:
         Tuple of (updated_current_lots, closed_lots_list)
@@ -160,14 +159,28 @@ def execute_exit(
 
     for exit_rule in sorted_exits:
         if evaluate_condition_func(exit_rule.condition, bar):
-            # Complete lot tracking before executing action
             num_lots = len(current_lots) if current_lots else 0
+
+            # Execute exit action first to get LEAN's actual fill price
+            execute_action_func(exit_rule.action)
+
+            # Use LEAN's fill price if available, else bar close
+            fill = get_last_fill() if get_last_fill else None
+            exit_price = fill["price"] if fill else float(bar.Close)
+            exit_fee = fill["fee"] if fill else 0.0
+
             if current_lots:
                 exit_reason = getattr(exit_rule, "id", "unknown") or "unknown"
 
+                # Distribute exit fee across lots proportionally
+                total_qty = sum(lot.get("quantity", 0) for lot in current_lots)
+                for lot in current_lots:
+                    lot_qty = lot.get("quantity", 0)
+                    lot["_exit_fee_share"] = exit_fee * (lot_qty / total_qty) if total_qty > 0 else 0.0
+
                 closed_lots = close_lots_func(
                     lots=current_lots,
-                    exit_price=float(bar.Close),
+                    exit_price=exit_price,
                     exit_time=current_time,
                     exit_bar=bar_count,
                     exit_reason=exit_reason,
@@ -175,13 +188,11 @@ def execute_exit(
                 closed_lots_list.extend(closed_lots)
                 current_lots = []
 
-            # Exit action is typed ExitAction (LiquidateAction | SetHoldingsAction)
-            execute_action_func(exit_rule.action)
             exit_id = getattr(exit_rule, "id", "unknown") or "unknown"
             if num_lots > 1:
-                log_func(f"🔴 EXIT ({exit_id}) @ ${bar.Close:.2f} | closed {num_lots} lots")
+                log_func(f"🔴 EXIT ({exit_id}) @ ${exit_price:.2f} | closed {num_lots} lots")
             else:
-                log_func(f"🔴 EXIT ({exit_id}) @ ${bar.Close:.2f}")
+                log_func(f"🔴 EXIT ({exit_id}) @ ${exit_price:.2f}")
             break  # Only execute first matching exit
 
     return current_lots, closed_lots_list

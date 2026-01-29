@@ -21,7 +21,7 @@ def execute_action(
     symbol: Any,
     portfolio: Any,
     securities: Any,
-    calculate_order_quantity_func: Any,
+    set_holdings_func: Any,
     market_order_func: Any,
     liquidate_func: Any,
     log_func: Any,
@@ -30,20 +30,16 @@ def execute_action(
     """Execute an action from IR.
 
     Supports multiple sizing modes for set_holdings:
-    - pct_equity: uses allocation field directly (fraction of portfolio)
+    - pct_equity: uses LEAN's SetHoldings directly (MinimumOrderMarginPortfolioPercentage=0)
     - fixed_usd: fixed USD amount, converted to quantity at current price
     - fixed_units: fixed number of units/shares to trade
-
-    Note: For all sizing modes, we use CalculateOrderQuantity + MarketOrder
-    instead of SetHoldings to ensure small orders are properly executed.
-    See: https://www.quantconnect.com/forum/discussion/2978/minimum-order-clip-size/
 
     Args:
         action: Typed action from IR (SetHoldingsAction, LiquidateAction, MarketOrderAction)
         symbol: Trading symbol
         portfolio: LEAN Portfolio object
         securities: LEAN Securities object
-        calculate_order_quantity_func: Function to calculate order quantity
+        set_holdings_func: Function to set holdings (LEAN SetHoldings)
         market_order_func: Function to place market order
         liquidate_func: Function to liquidate position
         log_func: Logging function
@@ -56,14 +52,9 @@ def execute_action(
         sizing_mode = action.sizing_mode
 
         if sizing_mode == "pct_equity":
-            # Use CalculateOrderQuantity + MarketOrder instead of SetHoldings
-            # This ensures small orders are executed rather than silently skipped
-            allocation = action.allocation
-            quantity = calculate_order_quantity_func(symbol, allocation)
-            if quantity != 0:
-                market_order_func(symbol, quantity)
-            else:
-                log_func(f"⚠️ Order quantity is zero for allocation={allocation}, skipping order")
+            # MinimumOrderMarginPortfolioPercentage=0 is set in Initialize(),
+            # so SetHoldings works correctly for small orders
+            set_holdings_func(symbol, action.allocation)
 
         elif sizing_mode == "fixed_usd":
             # Fixed USD amount - compute quantity directly from price

@@ -45,25 +45,15 @@ def evaluate_regime(
             return _apply_op(op, adx_ind.Current.Value, value)
         return False
     if metric in ("vol_bb_width_pctile", "bb_width_pctile"):
-        # BB width percentile - manual calculation (derived value, not direct price)
-        # IR translator creates BB with deterministic ID: bb_{period}
         bb_period = condition.lookback_bars or 20
         bb_ind = ctx.indicators.get(f"bb_{bb_period}")
         if not bb_ind:
             return False
-        u = bb_ind.UpperBand.Current.Value
-        lo = bb_ind.LowerBand.Current.Value
-        m = bb_ind.MiddleBand.Current.Value
-        if m == 0:
+        from .helpers import compute_bb_width_percentile
+        pctile = compute_bb_width_percentile(bb_ind, ctx.rolling_windows.get("bb_width"))
+        if pctile is None:
             return False
-        width = (u - lo) / m
-        width_rw = ctx.rolling_windows.get("bb_width")
-        if width_rw and getattr(width_rw.get("window"), "IsReady", False):
-            w = width_rw["window"]
-            widths = list(w) if hasattr(w, "__iter__") else []
-            pctile = (sum(1 for x in widths if x < width) / len(widths) * 100) if widths else 0
-            return _apply_op(op, pctile, value)
-        return _apply_op(op, width * 100, value)
+        return _apply_op(op, pctile, value)
     if metric == "vol_atr_pct":
         atr_ind = ctx.indicators.get("atr") or ctx.indicators.get("atr_14")
         if atr_ind and bar.Close != 0:
@@ -122,39 +112,15 @@ def evaluate_regime(
         touches = bar.Low <= level_value <= bar.High
         return _apply_op(op, 1 if touches else 0, value)
     if metric == "liquidity_sweep":
-        # Delegate to liquidity sweep evaluator logic
+        from vibe_trade_shared.models.ir import LiquiditySweepCondition
+        from .liquidity_sweep import evaluate_liquidity_sweep
         lookback = condition.lookback_bars or 20
-        state_key = f"liquidity_sweep_{lookback}"
-        sweep_triggered = ctx.state.get(f"{state_key}_triggered", False)
-        sweep_bar_count = ctx.state.get(f"{state_key}_bars", 0)
-        
-        # Get level from MIN indicator
-        min_ind = ctx.indicators.get(f"min_{lookback}")
-        if not min_ind or not min_ind.IsReady:
-            return False
-        level_value = min_ind.Current.Value
-        
-        if level_value is None:
-            return False
-        
-        if not sweep_triggered:
-            if bar.Low < level_value:
-                ctx.state[f"{state_key}_triggered"] = True
-                ctx.state[f"{state_key}_bars"] = 0
-                ctx.state[f"{state_key}_level"] = level_value
-            return False
-        
-        sweep_bar_count += 1
-        ctx.state[f"{state_key}_bars"] = sweep_bar_count
-        
-        if sweep_bar_count > lookback:
-            ctx.state[f"{state_key}_triggered"] = False
-            return False
-        
-        sweep_level = ctx.state.get(f"{state_key}_level", level_value)
-        if bar.Close > sweep_level:
-            ctx.state[f"{state_key}_triggered"] = False
-            return _apply_op(op, 1, value)
-        
-        return False
+        sweep_cond = LiquiditySweepCondition(
+            type="liquidity_sweep",
+            level_type="rolling_min",
+            level_period=lookback,
+            lookback_bars=lookback,
+        )
+        result = evaluate_liquidity_sweep(sweep_cond, bar, ctx)
+        return _apply_op(op, 1 if result else 0, value)
     return False

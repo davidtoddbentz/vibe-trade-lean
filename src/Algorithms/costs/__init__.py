@@ -1,8 +1,5 @@
-"""Trading costs (fees and slippage) for StrategyRuntime.
+"""Trading costs for StrategyRuntime.
 
-Phase 12: Extracted from StrategyRuntime.
+Fees and slippage are now handled by LEAN's native FeeModel and SlippageModel.
+See StrategyRuntime.Initialize() for configuration.
 """
-
-from .calculation import apply_slippage, calculate_fee
-
-__all__ = ["apply_slippage", "calculate_fee"]

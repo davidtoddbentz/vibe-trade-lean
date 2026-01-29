@@ -18,4 +18,5 @@ __all__ = [
     "setup_symbols",
     "setup_rules",
     "setup_tracking",
+    "setup_trading_costs",
 ]

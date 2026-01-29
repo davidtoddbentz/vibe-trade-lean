@@ -25,7 +25,7 @@ def create_lot(
         symbol: Trading symbol
         direction: "long" or "short"
         entry_time: Entry timestamp
-        entry_price: Entry price (with slippage)
+        entry_price: Entry price at bar close
         entry_bar: Bar index where entry occurred
         quantity: Quantity for this lot
         entry_fee: Fee paid on entry
@@ -51,19 +51,15 @@ def close_lots(
     exit_time: Any,
     exit_bar: int,
     exit_reason: str,
-    apply_slippage_func: Any,
-    calculate_fee_func: Any,
 ) -> list[dict[str, Any]]:
     """Close all lots and calculate PnL for each.
 
     Args:
         lots: List of open lot dicts
-        exit_price: Base exit price (before slippage)
+        exit_price: Exit price at bar close
         exit_time: Exit timestamp
         exit_bar: Bar index where exit occurred
         exit_reason: Reason for exit
-        apply_slippage_func: Function to apply slippage (price, is_buy) -> price
-        calculate_fee_func: Function to calculate fee (trade_value) -> fee
 
     Returns:
         List of closed lot dicts (with exit info and PnL)
@@ -75,15 +71,10 @@ def close_lots(
         direction = lot["direction"]  # Always set by create_lot
         entry_fee = lot["entry_fee"]  # Always set by create_lot
 
-        # Apply slippage to exit price
-        # For long exit: selling, so receive less (slippage down)
-        # For short exit: buying/covering, so pay more (slippage up)
-        is_buy_exit = (direction == "short")  # Short covers with a buy
-        final_exit_price = apply_slippage_func(exit_price, is_buy_exit)
+        final_exit_price = exit_price
 
-        # Calculate exit fee
-        exit_value = final_exit_price * quantity
-        exit_fee = calculate_fee_func(exit_value)
+        # Use exit fee share from LEAN fill if available, else 0
+        exit_fee = lot.pop("_exit_fee_share", 0.0)
         total_fees = entry_fee + exit_fee
 
         # PnL calculation: short profits when price drops
@@ -211,8 +202,6 @@ def close_lots_at_end(
     exit_price: float,
     exit_time: Any,
     exit_bar: int,
-    apply_slippage_func: Any,
-    calculate_fee_func: Any,
     log_func: Any,
 ) -> list[dict[str, Any]]:
     """Close all lots at end of backtest.
@@ -222,8 +211,6 @@ def close_lots_at_end(
         exit_price: Final price
         exit_time: Exit timestamp
         exit_bar: Bar index (typically bar_count - 1)
-        apply_slippage_func: Function to apply slippage
-        calculate_fee_func: Function to calculate fee
         log_func: Logging function
 
     Returns:
@@ -235,6 +222,4 @@ def close_lots_at_end(
         exit_time=exit_time,
         exit_bar=exit_bar,
         exit_reason="end_of_backtest",
-        apply_slippage_func=apply_slippage_func,
-        calculate_fee_func=calculate_fee_func,
     )

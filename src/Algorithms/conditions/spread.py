@@ -13,10 +13,9 @@ from .context import EvalContext
 
 
 def evaluate_spread(condition: SpreadCondition, bar: Any, ctx: EvalContext) -> bool:
-    """Evaluate spread condition (placeholder for single-symbol: same price for both)."""
-    # Placeholder: multi-symbol requires LEAN multi-symbol data
+    """Evaluate spread condition."""
     price_a = bar.Close
-    price_b = bar.Close
+    price_b = bar.Close  # Placeholder for multi-symbol
 
     if price_b == 0:
         return False
@@ -35,8 +34,18 @@ def evaluate_spread(condition: SpreadCondition, bar: Any, ctx: EvalContext) -> b
         return spread_val > condition.threshold
     if condition.trigger_op == "below":
         return spread_val < condition.threshold
+
+    # Cross detection needs previous value
+    state_key = f"spread_{condition.calc_type}_{condition.threshold}"
+    prev_val = ctx.state.get(state_key)
+    ctx.state[state_key] = spread_val
+
+    if prev_val is None:
+        return False
+
     if condition.trigger_op == "crosses_above":
-        return spread_val > condition.threshold
+        return prev_val <= condition.threshold and spread_val > condition.threshold
     if condition.trigger_op == "crosses_below":
-        return spread_val < condition.threshold
+        return prev_val >= condition.threshold and spread_val < condition.threshold
+
     return False

@@ -52,6 +52,7 @@ def evaluate_intermarket(
             else:
                 return False
 
-    if condition.direction == "same":
-        return roc_value > condition.trigger_threshold or roc_value < -condition.trigger_threshold
-    return roc_value > condition.trigger_threshold or roc_value < -condition.trigger_threshold
+    # Condition detects significant leader movement.
+    # "same"/"opposite" direction is an action-level concern (which way to trade),
+    # not a condition-level concern (whether the signal fires).
+    return abs(roc_value) > condition.trigger_threshold

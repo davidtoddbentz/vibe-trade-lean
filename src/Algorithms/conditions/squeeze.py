@@ -26,20 +26,12 @@ def evaluate_squeeze(condition: SqueezeCondition, bar: Any, ctx: EvalContext) ->
         if not in_squeeze:
             return False
 
-    # BB width percentile - manual calculation (derived value)
+    # BB width percentile check
+    from .helpers import compute_bb_width_percentile
     width_rw = ctx.rolling_windows.get("bb_width")
-    if width_rw and width_rw.get("window") and width_rw["window"].IsReady:
-        upper = bb_ind.UpperBand.Current.Value
-        lower = bb_ind.LowerBand.Current.Value
-        middle = bb_ind.MiddleBand.Current.Value
-        if middle != 0:
-            width = (upper - lower) / middle
-            window = width_rw["window"]
-            widths = list(window) if hasattr(window, "__iter__") else []
-            if widths:
-                pctile = sum(1 for w in widths if w < width) / len(widths) * 100
-                if pctile > condition.pctile_threshold:
-                    return False
+    pctile = compute_bb_width_percentile(bb_ind, width_rw)
+    if pctile is not None and pctile > condition.pctile_threshold:
+        return False
 
     if condition.with_trend:
         ema_fast = ctx.indicators.get("ema_fast") or ctx.indicators.get("ema_20")

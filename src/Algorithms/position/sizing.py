@@ -14,7 +14,7 @@ def can_accumulate(
     entry_rule: Any,
     current_lots: list[Any],
     bar_count: int,
-    last_entry_bar: int,
+    last_entry_bar: int | None,
 ) -> bool:
     """Check if position policy allows another entry while invested.
 
@@ -56,7 +56,7 @@ def can_accumulate(
         return False
 
     # Check min_bars_between cooldown
-    if policy.min_bars_between is not None and (bar_count - last_entry_bar) < policy.min_bars_between:
+    if policy.min_bars_between is not None and last_entry_bar is not None and (bar_count - last_entry_bar) < policy.min_bars_between:
         return False
 
     return True

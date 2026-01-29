@@ -210,7 +210,7 @@ def setup_tracking(initial_cash: float) -> dict[str, Any]:
     return {
         "trades": [],
         "current_lots": [],
-        "last_entry_bar": -999,
+        "last_entry_bar": None,
         "equity_curve": [],
         "peak_equity": initial_cash,
         "max_drawdown": 0.0,

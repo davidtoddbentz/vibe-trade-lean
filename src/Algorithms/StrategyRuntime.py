@@ -34,7 +34,6 @@ from position import (
     track_equity,
 )
 from gates import evaluate_gates
-from costs import apply_slippage as _apply_slippage_func, calculate_fee as _calculate_fee_func
 from symbols import add_symbol, normalize_symbol, get_symbol_obj
 from ir import load_ir_from_file
 from execution import execute_action, execute_entry, execute_exit
@@ -215,6 +214,19 @@ class StrategyRuntime(QCAlgorithm):
         self.fee_pct = costs["fee_pct"]
         self.slippage_pct = costs["slippage_pct"]
 
+        # Apply LEAN-native cost models to securities so portfolio accounting is authoritative
+        if self.fee_pct > 0:
+            fee_model = PercentageFeeModel(self.fee_pct)
+            for sym_key, sym_obj in self.symbols.items():
+                self.Securities[sym_obj].SetFeeModel(fee_model)
+            self.Log(f"   Applied PercentageFeeModel({self.fee_pct}%) to {len(self.symbols)} securities")
+
+        if self.slippage_pct > 0:
+            slippage_decimal = self.slippage_pct / 100.0
+            for sym_key, sym_obj in self.symbols.items():
+                self.Securities[sym_obj].SetSlippageModel(ConstantSlippageModel(slippage_decimal))
+            self.Log(f"   Applied ConstantSlippageModel({self.slippage_pct}%) to {len(self.symbols)} securities")
+
         # Initialize indicators - unified registry pattern
         # Maps indicator_id -> (category, indicator_or_data)
         self.indicator_registry: dict[str, tuple[IndicatorCategory, Any]] = {}
@@ -249,6 +261,9 @@ class StrategyRuntime(QCAlgorithm):
         self.max_drawdown = tracking["max_drawdown"]
         self.bar_count = tracking["bar_count"]
 
+        # Last fill info from LEAN's OnOrderEvent (for accurate lot pricing)
+        self._last_fill = None
+
         # Crossover detection state
         self._cross_prev = {}  # Stores previous (left, right) values per condition
 
@@ -272,15 +287,6 @@ class StrategyRuntime(QCAlgorithm):
             log_func=self.Log,
             custom_data_class=CustomCryptoData,  # Defined in this file
         )
-
-    def _apply_slippage(self, price: float, is_buy: bool) -> float:
-        """Apply slippage to a price."""
-        slippage_bps = int(self.slippage_pct * 100) if self.slippage_pct > 0 else 0
-        return _apply_slippage_func(price, is_buy, slippage_bps) if slippage_bps > 0 else price
-
-    def _calculate_fee(self, trade_value: float) -> float:
-        """Calculate fee for a given trade value."""
-        return _calculate_fee_func(trade_value, self.fee_pct) if self.fee_pct > 0 else 0.0
 
     def _normalize_symbol(self, symbol_str: str) -> str:
         """Normalize symbol string for dictionary keys."""
@@ -411,9 +417,15 @@ class StrategyRuntime(QCAlgorithm):
             last_entry_bar=self.last_entry_bar,
         )
 
+    def _get_and_clear_last_fill(self):
+        """Return last fill info from OnOrderEvent and clear it."""
+        fill = self._last_fill
+        self._last_fill = None
+        return fill
+
     def _evaluate_entry(self, bar):
         """Evaluate entry rule and execute if conditions met."""
-        self.current_lots, self.last_entry_bar = execute_entry(
+        self.current_lots, new_entry_bar = execute_entry(
             entry_rule=self.entry_rule,
             evaluate_condition_func=self._evaluate_condition,
             bar=bar,
@@ -422,13 +434,15 @@ class StrategyRuntime(QCAlgorithm):
             symbol=self.symbol,
             portfolio=self.Portfolio,
             current_time=self.Time,
-            apply_slippage_func=self._apply_slippage,
-            calculate_fee_func=self._calculate_fee,
             execute_action_func=lambda action, b=None: self._execute_action(action, b),
             execute_state_op_func=self._execute_state_op,
             overlays=self.overlays,
             log_func=self.Log,
+            get_last_fill=self._get_and_clear_last_fill,
         )
+        # Only update last_entry_bar when an entry actually fired (None = no entry)
+        if new_entry_bar is not None:
+            self.last_entry_bar = new_entry_bar
 
     def _evaluate_exits(self, bar):
         """Evaluate exit rules in priority order."""
@@ -447,11 +461,10 @@ class StrategyRuntime(QCAlgorithm):
                 exit_time=exit_time,
                 exit_bar=exit_bar,
                 exit_reason=exit_reason,
-                apply_slippage_func=self._apply_slippage,
-                calculate_fee_func=self._calculate_fee,
             ),
             execute_action_func=lambda action: self._execute_action(action),
             log_func=self.Log,
+            get_last_fill=self._get_and_clear_last_fill,
         )
         self.trades.extend(closed_lots_list)
 
@@ -476,7 +489,7 @@ class StrategyRuntime(QCAlgorithm):
             symbol=self.symbol,
             portfolio=self.Portfolio,
             securities=self.Securities,
-            calculate_order_quantity_func=self.CalculateOrderQuantity,
+            set_holdings_func=self.SetHoldings,
             market_order_func=self.MarketOrder,
             liquidate_func=self.Liquidate,
             log_func=self.Log,
@@ -505,6 +518,32 @@ class StrategyRuntime(QCAlgorithm):
             log_func=self.Log,
         )
 
+    def OnOrderEvent(self, orderEvent):
+        """Capture LEAN fill prices and fees for lot tracking.
+
+        When LEAN fills an order, it applies slippage and fees. We store the
+        fill info so lot tracking can use actual fill prices instead of bar close.
+        """
+        if orderEvent.Status != OrderStatus.Filled:
+            return
+
+        fill_price = float(orderEvent.FillPrice)
+        fill_qty = float(orderEvent.FillQuantity)
+
+        # Get the order fee from the event
+        order_fee = 0.0
+        try:
+            order_fee = float(orderEvent.OrderFee.Value.Amount)
+        except (AttributeError, Exception):
+            pass
+
+        # Store fill info for the lot tracker to pick up
+        self._last_fill = {
+            "price": fill_price,
+            "quantity": fill_qty,
+            "fee": order_fee,
+        }
+
     def OnEndOfAlgorithm(self):
         """Called when algorithm ends."""
         # Close any open lots and record as trades
@@ -517,8 +556,6 @@ class StrategyRuntime(QCAlgorithm):
                 exit_price=raw_price,
                 exit_time=self.Time,
                 exit_bar=self.bar_count - 1,  # bar_count has been incremented past the last bar
-                apply_slippage_func=self._apply_slippage,
-                calculate_fee_func=self._calculate_fee,
                 log_func=self.Log,
             )
             self.trades.extend(closed_lots)
@@ -531,14 +568,7 @@ class StrategyRuntime(QCAlgorithm):
 
         initial_cash = float(self.GetParameter("initial_cash") or 100000)
 
-        # Calculate final equity from trade PnLs (includes manual fee calculations)
-        # This is more accurate than LEAN's portfolio value which doesn't include our manual fees
-        # All trades have "pnl" set by close_lots()
-        total_trade_pnl = sum(t["pnl"] for t in self.trades)
-        final_equity = initial_cash + total_trade_pnl
-
-        # Also get LEAN's portfolio value for comparison/logging
-        lean_portfolio_value = self.Portfolio.TotalPortfolioValue
+        final_equity = float(self.Portfolio.TotalPortfolioValue)
 
         # Generate report using trades module
         output = generate_report(
@@ -565,8 +595,6 @@ class StrategyRuntime(QCAlgorithm):
         self.Log("PERFORMANCE")
         self.Log(f"  Initial Capital:    ${initial_cash:,.2f}")
         self.Log(f"  Final Equity:       ${final_equity:,.2f}")
-        if abs(final_equity - lean_portfolio_value) > 0.01:
-            self.Log(f"  (LEAN Portfolio:    ${lean_portfolio_value:,.2f} - before manual fees)")
         self.Log(f"  Total Return:       {total_return:+.2f}%")
         self.Log(f"  Max Drawdown:       {self.max_drawdown:.2f}%")
         self.Log("")
