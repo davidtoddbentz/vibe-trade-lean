@@ -329,6 +329,12 @@ class StrategyRuntime(QCAlgorithm):
 
         bar = data[self.symbol]
 
+        # Reset daily entry counter on new calendar day
+        current_date = str(self.Time.date())
+        if self.tracking.last_entry_date != current_date:
+            self.tracking.entries_today = 0
+            self.tracking.last_entry_date = current_date
+
         # Update all custom indicators using the registry
         # (LEAN indicators are auto-updated by the framework)
         update_all_indicators(
@@ -412,6 +418,7 @@ class StrategyRuntime(QCAlgorithm):
             current_lots=self.tracking.current_lots,
             bar_count=self.tracking.bar_count,
             last_entry_bar=self.tracking.last_entry_bar,
+            entries_today=self.tracking.entries_today,
         )
 
     def _get_and_clear_last_fill(self) -> FillInfo | None:

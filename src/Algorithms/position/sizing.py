@@ -16,6 +16,7 @@ def can_accumulate(
     current_lots: list[Lot],
     bar_count: int,
     last_entry_bar: int | None,
+    entries_today: int = 0,
 ) -> bool:
     """Check if position policy allows another entry while invested.
 
@@ -23,12 +24,14 @@ def can_accumulate(
     - mode is "accumulate" or "scale_in"
     - max_positions limit not reached
     - min_bars_between cooldown has passed
+    - max_entries_per_day limit not reached
 
     Args:
         entry_rule: EntryRule from IR
         current_lots: List of open lots
         bar_count: Current bar index
         last_entry_bar: Bar index of last entry
+        entries_today: Number of entries already made today
 
     Returns:
         True if accumulation is allowed
@@ -58,6 +61,10 @@ def can_accumulate(
 
     # Check min_bars_between cooldown
     if policy.min_bars_between is not None and last_entry_bar is not None and (bar_count - last_entry_bar) < policy.min_bars_between:
+        return False
+
+    # Check max_entries_per_day limit
+    if policy.max_entries_per_day is not None and entries_today >= policy.max_entries_per_day:
         return False
 
     return True

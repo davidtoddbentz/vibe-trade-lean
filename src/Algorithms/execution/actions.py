@@ -18,6 +18,35 @@ from vibe_trade_shared.models.ir import (
 from execution.context import ExecutionContext
 
 
+def _clamp_quantity_by_notional(
+    quantity: float,
+    price: float,
+    min_usd: float | None,
+    max_usd: float | None,
+    ctx: ExecutionContext,
+) -> float | None:
+    """Clamp a quantity to min/max notional USD constraints.
+
+    Returns the clamped quantity, or None if the order should be skipped
+    (notional below min_usd floor).
+    """
+    if price <= 0:
+        return quantity
+    notional = abs(quantity) * price
+    sign = 1.0 if quantity >= 0 else -1.0
+
+    if min_usd is not None and notional < min_usd:
+        ctx.log(f"   Skipping order: notional ${notional:.2f} < min_usd ${min_usd:.2f}")
+        return None
+
+    if max_usd is not None and notional > max_usd:
+        clamped_qty = sign * (max_usd / price)
+        ctx.log(f"   Clamping: ${notional:.2f} -> max_usd ${max_usd:.2f} ({abs(clamped_qty):.6f} units)")
+        return clamped_qty
+
+    return quantity
+
+
 def execute_action(
     action: EntryAction | ExitAction,
     ctx: ExecutionContext,
@@ -40,10 +69,26 @@ def execute_action(
 
     if isinstance(action, SetHoldingsAction):
         sizing_mode = action.sizing_mode
+        min_usd = action.min_usd
+        max_usd = action.max_usd
 
         if sizing_mode == "pct_equity":
             # MinimumOrderMarginPortfolioPercentage=0 is set in Initialize(),
             # so SetHoldings works correctly for small orders
+            if min_usd is not None or max_usd is not None:
+                # Need to compute notional to clamp
+                price = float(bar.Close) if bar else ctx.securities[ctx.symbol].Price
+                equity = float(ctx.portfolio.TotalPortfolioValue)
+                target_notional = abs(action.allocation) * equity
+                sign = 1.0 if action.allocation >= 0 else -1.0
+                if min_usd is not None and target_notional < min_usd:
+                    ctx.log(f"   Skipping pct_equity order: ${target_notional:.2f} < min_usd ${min_usd:.2f}")
+                    return
+                if max_usd is not None and target_notional > max_usd:
+                    clamped_alloc = sign * (max_usd / equity) if equity > 0 else 0.0
+                    ctx.log(f"   Clamping pct_equity: {abs(action.allocation):.2%} -> {abs(clamped_alloc):.2%} (max_usd ${max_usd:.2f})")
+                    ctx.set_holdings(ctx.symbol, clamped_alloc)
+                    return
             ctx.set_holdings(ctx.symbol, action.allocation)
 
         elif sizing_mode == "fixed_usd":
@@ -57,6 +102,9 @@ def execute_action(
             price = float(bar.Close) if bar else ctx.securities[ctx.symbol].Price
             if price > 0:
                 quantity = fixed_usd / price
+                quantity = _clamp_quantity_by_notional(quantity, price, min_usd, max_usd, ctx)
+                if quantity is None:
+                    return
                 if quantity > 0:
                     ctx.market_order(ctx.symbol, quantity)
                     ctx.log(f"   Fixed USD: ${abs(fixed_usd):.2f} -> {abs(quantity):.6f} units @ ${price:.2f}")
@@ -71,6 +119,10 @@ def execute_action(
                 ctx.log("⚠️ Cannot execute fixed_units: fixed_units is None")
                 return
             fixed_units = action.fixed_units
+            price = float(bar.Close) if bar else ctx.securities[ctx.symbol].Price
+            fixed_units = _clamp_quantity_by_notional(fixed_units, price, min_usd, max_usd, ctx)
+            if fixed_units is None:
+                return
             if fixed_units > 0:
                 ctx.market_order(ctx.symbol, fixed_units)
                 ctx.log(f"   Fixed units: {abs(fixed_units):.6f}")

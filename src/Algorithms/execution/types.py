@@ -80,6 +80,8 @@ class TrackingState:
     trades: list[ClosedLot] = field(default_factory=list)
     current_lots: list[Lot] = field(default_factory=list)
     last_entry_bar: int | None = None
+    entries_today: int = 0
+    last_entry_date: str | None = None
     equity_curve: list[EquityPoint] = field(default_factory=list)
     peak_equity: float = 0.0
     max_drawdown: float = 0.0

@@ -109,6 +109,7 @@ def execute_entry(
     )
     tracking.current_lots.append(lot)
     last_entry_bar = tracking.bar_count
+    tracking.entries_today += 1  # Reset daily in StrategyRuntime.OnData
 
     # Run on_fill hooks (EntryRule is typed; on_fill is list[StateOp])
     on_fill = entry_rule.on_fill or []
