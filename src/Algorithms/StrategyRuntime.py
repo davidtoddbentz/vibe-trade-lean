@@ -255,14 +255,7 @@ class StrategyRuntime(QCAlgorithm):
         self.on_bar_ops = rules["on_bar_ops"]
 
         # Trade tracking for output (lot-based for accumulation support)
-        tracking = TrackingState(peak_equity=initial_cash)
-        self.trades = tracking.trades
-        self.current_lots = tracking.current_lots
-        self.last_entry_bar = tracking.last_entry_bar
-        self.equity_curve = tracking.equity_curve
-        self.peak_equity = tracking.peak_equity
-        self.max_drawdown = tracking.max_drawdown
-        self.bar_count = tracking.bar_count
+        self.tracking = TrackingState(peak_equity=initial_cash)
 
         # Last fill info from LEAN's OnOrderEvent (for accurate lot pricing)
         self._last_fill = None
@@ -363,7 +356,7 @@ class StrategyRuntime(QCAlgorithm):
         # This prevents trades from occurring before the user's requested start date
         # while still allowing indicators to warm up and state to be tracked
         if self.trading_start_date and self.Time < self.trading_start_date:
-            self.bar_count += 1
+            self.tracking.bar_count += 1
             return
 
         # Check position state
@@ -381,7 +374,7 @@ class StrategyRuntime(QCAlgorithm):
             self._evaluate_entry(bar)
 
         # Increment bar count AFTER all processing (0-indexed)
-        self.bar_count += 1
+        self.tracking.bar_count += 1
 
     def _track_equity(self, bar):
         """Track portfolio equity for equity curve."""
@@ -389,19 +382,19 @@ class StrategyRuntime(QCAlgorithm):
         equity = self.Portfolio.TotalPortfolioValue
         cash = self.Portfolio.Cash
         holdings = equity - cash
-        drawdown = (self.peak_equity - equity) / self.peak_equity * 100 if self.peak_equity > 0 else 0
+        drawdown = (self.tracking.peak_equity - equity) / self.tracking.peak_equity * 100 if self.tracking.peak_equity > 0 else 0
 
-        self.peak_equity, self.max_drawdown = track_equity(
+        self.tracking.peak_equity, self.tracking.max_drawdown = track_equity(
             equity=equity,
             cash=cash,
             holdings=holdings,
             drawdown=drawdown,
             current_time=self.Time,
-            bar_count=self.bar_count,
+            bar_count=self.tracking.bar_count,
             resolution=self.resolution,
-            equity_curve=self.equity_curve,
-            peak_equity=self.peak_equity,
-            max_drawdown=self.max_drawdown,
+            equity_curve=self.tracking.equity_curve,
+            peak_equity=self.tracking.peak_equity,
+            max_drawdown=self.tracking.max_drawdown,
         )
 
 
@@ -426,9 +419,9 @@ class StrategyRuntime(QCAlgorithm):
         """Check if position policy allows another entry while invested."""
         return can_accumulate(
             entry_rule=self.entry_rule,
-            current_lots=self.current_lots,
-            bar_count=self.bar_count,
-            last_entry_bar=self.last_entry_bar,
+            current_lots=self.tracking.current_lots,
+            bar_count=self.tracking.bar_count,
+            last_entry_bar=self.tracking.last_entry_bar,
         )
 
     def _get_and_clear_last_fill(self) -> FillInfo | None:
@@ -439,12 +432,12 @@ class StrategyRuntime(QCAlgorithm):
 
     def _evaluate_entry(self, bar):
         """Evaluate entry rule and execute if conditions met."""
-        self.current_lots, new_entry_bar = execute_entry(
+        self.tracking.current_lots, new_entry_bar = execute_entry(
             entry_rule=self.entry_rule,
             evaluate_condition=self._evaluate_condition,
             bar=bar,
-            current_lots=self.current_lots,
-            bar_count=self.bar_count,
+            current_lots=self.tracking.current_lots,
+            bar_count=self.tracking.bar_count,
             ctx=self._exec_ctx,
             current_time=self.Time,
             execute_action_func=lambda action, b=None: self._execute_action(action, b),
@@ -453,23 +446,23 @@ class StrategyRuntime(QCAlgorithm):
         )
         # Only update last_entry_bar when an entry actually fired (None = no entry)
         if new_entry_bar is not None:
-            self.last_entry_bar = new_entry_bar
+            self.tracking.last_entry_bar = new_entry_bar
 
     def _evaluate_exits(self, bar):
         """Evaluate exit rules in priority order."""
         closed_lots_list = []
-        self.current_lots, closed_lots_list = execute_exit(
+        self.tracking.current_lots, closed_lots_list = execute_exit(
             exit_rules=self.exit_rules,
             evaluate_condition=self._evaluate_condition,
             bar=bar,
-            current_lots=self.current_lots,
-            bar_count=self.bar_count,
+            current_lots=self.tracking.current_lots,
+            bar_count=self.tracking.bar_count,
             ctx=self._exec_ctx,
             current_time=self.Time,
             close_lots_func=close_lots,
             execute_action_func=lambda action: self._execute_action(action),
         )
-        self.trades.extend(closed_lots_list)
+        self.tracking.trades.extend(closed_lots_list)
 
     def _run_on_bar_invested(self, bar):
         """Run on_bar_invested state operations."""
@@ -540,19 +533,19 @@ class StrategyRuntime(QCAlgorithm):
     def OnEndOfAlgorithm(self):
         """Called when algorithm ends."""
         # Close any open lots and record as trades
-        if self.current_lots and self.Portfolio.Invested:
+        if self.tracking.current_lots and self.Portfolio.Invested:
             raw_price = float(self.Portfolio[self.symbol].Price)
-            num_lots = len(self.current_lots)
+            num_lots = len(self.tracking.current_lots)
 
             closed_lots = close_lots_at_end(
-                lots=self.current_lots,
+                lots=self.tracking.current_lots,
                 exit_price=raw_price,
                 exit_time=self.Time,
-                exit_bar=self.bar_count - 1,  # bar_count has been incremented past the last bar
+                exit_bar=self.tracking.bar_count - 1,  # bar_count has been incremented past the last bar
                 log_func=self.Log,
             )
-            self.trades.extend(closed_lots)
-            self.current_lots = []
+            self.tracking.trades.extend(closed_lots)
+            self.tracking.current_lots = []
 
             if num_lots > 1:
                 self.Log(f"📊 Closed {num_lots} open lots at end: ${raw_price:.2f}")
@@ -565,11 +558,11 @@ class StrategyRuntime(QCAlgorithm):
 
         # Generate report using trades module
         output = generate_report(
-            trades=self.trades,
-            equity_curve=self.equity_curve,
+            trades=self.tracking.trades,
+            equity_curve=self.tracking.equity_curve,
             initial_cash=initial_cash,
             final_equity=final_equity,
-            max_drawdown=self.max_drawdown,
+            max_drawdown=self.tracking.max_drawdown,
             strategy_id=self.ir.strategy_id or "unknown",
             strategy_name=self.ir.strategy_name or "Unknown",
             symbol=str(self.symbol),
@@ -589,7 +582,7 @@ class StrategyRuntime(QCAlgorithm):
         self.Log(f"  Initial Capital:    ${initial_cash:,.2f}")
         self.Log(f"  Final Equity:       ${final_equity:,.2f}")
         self.Log(f"  Total Return:       {total_return:+.2f}%")
-        self.Log(f"  Max Drawdown:       {self.max_drawdown:.2f}%")
+        self.Log(f"  Max Drawdown:       {self.tracking.max_drawdown:.2f}%")
         self.Log("")
         self.Log("TRADES")
         self.Log(f"  Total Trades:       {stats['total_trades']}")
@@ -603,9 +596,9 @@ class StrategyRuntime(QCAlgorithm):
 
         # Log individual trades
         # All trades have exit_price, pnl_percent, and exit_reason set by close_lots()
-        if self.trades:
+        if self.tracking.trades:
             self.Log("TRADE LOG")
-            for i, t in enumerate(self.trades):
+            for i, t in enumerate(self.tracking.trades):
                 self.Log(
                     f"  #{i+1}: {t.direction.upper()} @ ${t.entry_price:.2f} -> "
                     f"${t.exit_price:.2f} | P&L: {t.pnl_percent:+.2f}% | Exit: {t.exit_reason}"
