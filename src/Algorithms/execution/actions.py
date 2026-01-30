@@ -109,8 +109,8 @@ def _execute_typed_order(
 ) -> int | None:
     """Execute a non-market order via LEAN's native order APIs.
 
-    CustomDataFillModel (C#) overrides GetPrices() to read OHLC from
-    PythonData's DynamicData storage, so LEAN's fill model handles
+    AddCrypto provides TradeBar data which implements IBar, so LEAN's
+    default fill model sees correct OHLC via SecurityCache and handles
     fill conditions and prices correctly.
 
     Returns the LEAN OrderId if an order was placed, or None if skipped.
@@ -136,7 +136,7 @@ def _execute_typed_order(
             ctx.log(f"   Invalid stop price: {stop_price}, skipping {order_type} order")
             return None
 
-    # Place native LEAN order — CustomDataFillModel handles fill logic
+    # Place native LEAN order — LEAN's default fill model handles fill logic
     ticket = None
     if order_type == "limit":
         ticket = ctx.limit_order(ctx.symbol, quantity, limit_price)

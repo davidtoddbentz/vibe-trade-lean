@@ -13,7 +13,7 @@ def load_ir_from_file(path: str, data_folder: str) -> dict:
 
     Args:
         path: Path to IR JSON file
-        data_folder: Data folder path (from CustomCryptoData.DataFolder)
+        data_folder: Data folder path (default /Data)
 
     Returns:
         IR dict

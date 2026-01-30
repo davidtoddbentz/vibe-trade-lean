@@ -4,7 +4,6 @@ Phase 12: Extracted from StrategyRuntime.
 """
 
 from .setup import (
-    setup_data_folder,
     setup_dates,
     setup_symbols,
     setup_rules,
@@ -12,7 +11,6 @@ from .setup import (
 )
 
 __all__ = [
-    "setup_data_folder",
     "setup_dates",
     "setup_symbols",
     "setup_rules",

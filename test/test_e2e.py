@@ -26,36 +26,6 @@ from generate_synthetic_data import (
 )
 
 
-def write_custom_csv_data(candles: list, symbol: str, start_date: datetime, output_dir: Path) -> None:
-    """Write candles in CustomCryptoData format expected by StrategyRuntime.
-
-    StrategyRuntime uses CustomCryptoData which expects:
-    - File at: /Data/{symbol}_data.csv (e.g., btcusd_data.csv)
-    - CSV format: datetime,open,high,low,close,volume
-    - Datetime format: YYYY-MM-DD HH:MM:SS
-
-    Args:
-        candles: List of Candle objects
-        symbol: Symbol name (e.g., "BTCUSD")
-        start_date: Start date for timestamping
-        output_dir: Path to output directory
-    """
-    from datetime import timedelta
-
-    # Normalize symbol: BTCUSD -> btcusd, BTC-USD -> btc_usd
-    symbol_normalized = symbol.lower().replace("-", "_")
-    csv_path = output_dir / f"{symbol_normalized}_data.csv"
-
-    with open(csv_path, "w") as f:
-        # Write header
-        f.write("datetime,open,high,low,close,volume\n")
-
-        # Write data rows
-        for i, candle in enumerate(candles):
-            timestamp = start_date + timedelta(minutes=i)
-            f.write(f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')},{candle.open},{candle.high},{candle.low},{candle.close},{candle.volume}\n")
-
-
 # Test configuration
 DOCKER_IMAGE = os.getenv("LEAN_IMAGE", "vibe-trade-lean:latest")
 TEST_DIR = Path(__file__).parent
@@ -127,7 +97,6 @@ def run_lean_backtest(
     timeout: int = 120,
     start_date: str = "20240101",
     end_date: str = "20240101",
-    use_custom_data_mode: bool = False,
 ) -> tuple[int, str, str]:
     """Run LEAN backtest with given data and strategy.
 
@@ -202,8 +171,6 @@ def run_lean_backtest(
         "docker", "run", "--rm",
         # Ensure StrategyRuntime can import the packaged modules copied into the image
         "-e", "PYTHONPATH=/Lean/Algorithm.Python:/Lean/Launcher/bin/Debug",
-        # Opt-in to legacy CustomCryptoData CSV ingestion (default is AddCrypto)
-        *(["-e", "USE_CUSTOM_DATA_MODE=true"] if use_custom_data_mode else []),
         "-v", f"{data_dir}:/Data",
         "-v", f"{results_dir}:/Results",
         "-v", f"{PROJECT_DIR}/src/Algorithms/StrategyRuntime.py:/Data/algorithms/StrategyRuntime.py:ro",

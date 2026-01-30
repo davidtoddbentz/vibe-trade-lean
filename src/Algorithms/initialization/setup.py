@@ -13,52 +13,6 @@ from AlgorithmImports import Resolution
 from vibe_trade_shared.models.ir import StrategyIR
 
 
-def setup_data_folder(
-    data_folder_param: str | None,
-    custom_data_class: Any,
-    log_func: Callable[[str], None],
-    debug_func: Callable[[str], None],
-) -> None:
-    """Set up data folder and debug logging.
-
-    Args:
-        data_folder_param: Data folder parameter from GetParameter
-        custom_data_class: CustomCryptoData class
-        log_func: Logging function
-        debug_func: Debug logging function
-    """
-    import os
-
-    if data_folder_param:
-        custom_data_class.DataFolder = data_folder_param
-        log_func(f"[INIT] Set data folder to: {data_folder_param}")
-    else:
-        log_func(f"[INIT] No data_folder parameter, using default: {custom_data_class.DataFolder}")
-
-    # Set up debug log in data folder
-    custom_data_class.DebugLogPath = os.path.join(custom_data_class.DataFolder, "debug.log")
-    debug_func(f"[INIT] Debug log path: {custom_data_class.DebugLogPath}")
-    custom_data_class._log_debug(f"[INIT] Debug logging initialized at {custom_data_class.DataFolder}")
-
-    # Debug: List files in data folder
-    try:
-        files = os.listdir(custom_data_class.DataFolder)
-        debug_func(f"[INIT] Files in data folder: {files}")
-        # Check for btc_usd_data.csv specifically
-        expected_file = os.path.join(custom_data_class.DataFolder, "btc_usd_data.csv")
-        if os.path.exists(expected_file):
-            debug_func("[INIT] ✅ Found btc_usd_data.csv")
-            # Read first few lines to verify format
-            with open(expected_file, 'r') as f:
-                lines = f.readlines()[:3]
-                for i, line in enumerate(lines):
-                    debug_func(f"[INIT] Line {i}: {line.strip()}")
-        else:
-            debug_func(f"[INIT] ❌ btc_usd_data.csv NOT FOUND at {expected_file}")
-    except Exception as e:
-        debug_func(f"[INIT] Error listing data folder: {e}")
-
-
 def setup_dates(
     start_date_str: str | None,
     end_date_str: str | None,

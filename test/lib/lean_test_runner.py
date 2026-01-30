@@ -128,7 +128,6 @@ class LEANTestRunner:
                 "-e", f"START_DATE={scenario.start_date}",
                 "-e", f"END_DATE={scenario.end_date}",
                 "-e", "SKIP_DATA_DOWNLOAD=1",
-                "-e", "USE_CUSTOM_DATA_MODE=true",
                 "-v", f"{data_dir}:/Data:ro",
                 "-v", f"{custom_dir}:/Data/custom/{scenario.symbol.lower()}:ro",
                 "-v", f"{results_dir}:/Results",

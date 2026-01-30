@@ -226,7 +226,6 @@ test-synthetic: build
 		-e START_DATE="2024-01-01" \
 		-e END_DATE="2024-01-01" \
 		-e SKIP_DATA_DOWNLOAD="1" \
-		-e USE_CUSTOM_DATA_MODE="true" \
 		-v "$(PWD)/test/data:/Data:ro" \
 		-v "$(PWD)/test/data/custom:/Data/custom:ro" \
 		-v "$(PWD)/test/results:/Results" \

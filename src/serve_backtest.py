@@ -348,53 +348,6 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         )
 
 
-def _write_ohlcv_bars_to_csv(
-    bars: list[OHLCVBar],
-    symbol: str,
-    output_dir: Path,
-) -> int:
-    """Write OHLCVBar data (t,o,h,l,c,v format) to LEAN CSV.
-
-    Args:
-        bars: List of OHLCVBar with t (ms timestamp), o, h, l, c, v fields
-        symbol: Trading symbol
-        output_dir: Data output directory
-
-    Returns:
-        Number of bars written
-    """
-    import csv
-    from datetime import timezone
-
-    if not bars:
-        return 0
-
-    # Normalize symbol for filename (e.g., BTC-USD -> btc_usd_data.csv)
-    symbol_normalized = symbol.lower().replace("-", "_")
-    filename = f"{symbol_normalized}_data.csv"
-    file_path = output_dir / filename
-
-    with open(file_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["datetime", "open", "high", "low", "close", "volume"])
-
-        for bar in bars:
-            # Convert ms timestamp to datetime
-            ts = datetime.fromtimestamp(bar.t / 1000, tz=timezone.utc)
-            dt_str = ts.strftime("%Y-%m-%d %H:%M:%S")
-            writer.writerow([
-                dt_str,
-                f"{bar.o:.2f}",
-                f"{bar.h:.2f}",
-                f"{bar.low:.2f}",
-                f"{bar.c:.2f}",
-                f"{bar.v:.2f}",
-            ])
-
-    logger.info(f"Wrote {len(bars)} bars to {file_path}")
-    return len(bars)
-
-
 def _write_ohlcv_bars_lean_zip(
     bars: list[OHLCVBar],
     symbol: str,
@@ -569,7 +522,7 @@ def _run_lean(
     # Log LEAN output for debugging
     if result.stdout:
         for line in result.stdout.split("\n"):
-            if "[COSTS]" in line or "Trading costs" in line or "[DEBUG]" in line or "Debug:" in line:
+            if "TRACE::" in line or "ERROR::" in line:
                 logger.info(f"LEAN: {line}")
 
     if result.returncode != 0:

@@ -34,13 +34,13 @@ from position import (
     track_equity,
 )
 from gates import evaluate_gates
-from symbols import add_symbol, normalize_symbol, get_symbol_obj
+from symbols import normalize_symbol, get_symbol_obj
 from ir import load_ir_from_file
 from execution.actions import execute_action
 from execution.orchestration import execute_entry, execute_exit
 from execution.context import ExecutionContext
 from execution.types import FillInfo, TrackingState
-from initialization import setup_data_folder, setup_dates, setup_symbols, setup_rules, setup_trading_costs
+from initialization import setup_dates, setup_symbols, setup_rules, setup_trading_costs
 from state import execute_state_op as _execute_state_op_func
 
 # Pydantic is required - StrategyIR.model_validate() is used
@@ -81,76 +81,6 @@ class PercentageFeeModel(FeeModel):
 
 
 # =============================================================================
-# Custom Data Reader for CSV files
-# =============================================================================
-
-
-class CustomCryptoData(PythonData):
-    """Custom data reader for cryptocurrency CSV files."""
-
-    # Class variable to hold the data folder path - set by algorithm
-    DataFolder = "/Data"
-
-    # Debug log file path
-    DebugLogPath = None
-
-    @staticmethod
-    def _log_debug(msg):
-        """Write debug message to log file."""
-        if CustomCryptoData.DebugLogPath:
-            try:
-                with open(CustomCryptoData.DebugLogPath, "a") as f:
-                    f.write(msg + "\n")
-            except Exception:
-                pass
-
-    def GetSource(self, config, date, isLiveMode):
-        """Return the data source - CSV file in data directory."""
-        import os
-        # Convert symbol to filename (e.g., BTC-USD -> btc_usd_data.csv)
-        # Symbol.ID.Symbol may include data type suffix (e.g., "BTC-USD.CustomCryptoData")
-        # We need to strip the suffix to get the base symbol
-        symbol = str(config.Symbol.ID.Symbol).lower()
-        # Strip the data type suffix if present (e.g., ".customcryptodata")
-        if "." in symbol:
-            symbol = symbol.split(".")[0]
-        # Normalize: replace dashes with underscores
-        symbol_normalized = symbol.replace("-", "_")
-        filename = f"{symbol_normalized}_data.csv"
-        # Use full path - data folder is set by the algorithm
-        full_path = f"{CustomCryptoData.DataFolder}/{filename}"
-        # Log for debugging
-        exists = os.path.exists(full_path)
-        CustomCryptoData._log_debug(f"[GetSource] DataFolder: {CustomCryptoData.DataFolder}, Symbol: {symbol}, Date: {date}, File: {full_path}, Exists: {exists}")
-        return SubscriptionDataSource(
-            full_path,
-            SubscriptionTransportMedium.LocalFile,
-            FileFormat.Csv
-        )
-
-    def Reader(self, config, line, date, isLiveMode):
-        """Parse a line from the CSV file."""
-        if not line or line.startswith("datetime"):
-            return None
-
-        data = CustomCryptoData()
-        try:
-            parts = line.split(",")
-            data.Time = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
-            data.Symbol = config.Symbol
-            data.Value = float(parts[4])  # close price
-            data["Open"] = float(parts[1])
-            data["High"] = float(parts[2])
-            data["Low"] = float(parts[3])
-            data["Close"] = float(parts[4])
-            data["Volume"] = float(parts[5])
-        except Exception as e:
-            CustomCryptoData._log_debug(f"[Reader] Error parsing line: {line[:50]}... Error: {e}")
-            return None
-        return data
-
-
-# =============================================================================
 # Runtime Algorithm
 # =============================================================================
 
@@ -166,26 +96,8 @@ class StrategyRuntime(QCAlgorithm):
         # See: https://www.quantconnect.com/forum/discussion/2978/minimum-order-clip-size/
         self.Settings.MinimumOrderMarginPortfolioPercentage = 0
 
-        # Mode selection:
-        # - LEAN-native mode (default): uses AddCrypto + LEAN data layout (/Data/crypto/{market}/...)
-        #   Works with any symbol registered in symbol-properties DB. Used for backtesting + live.
-        # - Custom data mode (opt-in via USE_CUSTOM_DATA_MODE=true): uses PythonData (CustomCryptoData) + CSV
-        #   Legacy fallback. Opt-in via env var or parameter.
-        use_custom_env = os.getenv("USE_CUSTOM_DATA_MODE", "").strip().lower()
-        use_custom_param = (self.GetParameter("use_custom_data_mode") or "").strip().lower()
-        self.use_custom_data_mode = (use_custom_env == "true") or (use_custom_param == "true")
-
-        # Data folder parameter is still used for IR IO and outputs
+        # Data folder parameter is used for IR IO and outputs
         self.data_folder = self.GetParameter("data_folder") or "/Data"
-
-        # Only configure CustomCryptoData folder when using PythonData CSV ingestion
-        if self.use_custom_data_mode:
-            setup_data_folder(
-                data_folder_param=self.data_folder,
-                custom_data_class=CustomCryptoData,
-                log_func=self.Log,
-                debug_func=self.Debug,
-            )
 
         # Get date parameters and set up dates
         self.trading_start_date, initial_cash = setup_dates(
@@ -210,7 +122,6 @@ class StrategyRuntime(QCAlgorithm):
             if not ir_path:
                 ir_path = "/Data/strategy_ir.json"
             self.Debug(f"Loading IR from: {ir_path}")
-            # Use selected data folder (CustomCryptoData.DataFolder only exists/changes in custom mode)
             ir_dict = load_ir_from_file(ir_path, self.data_folder)
         self.ir = StrategyIR.model_validate(ir_dict)
 
@@ -243,23 +154,6 @@ class StrategyRuntime(QCAlgorithm):
             for sym_key, sym_obj in self.symbols.items():
                 self.Securities[sym_obj].SetSlippageModel(ConstantSlippageModel(slippage_decimal))
             self.Log(f"   Applied ConstantSlippageModel({self.slippage_pct}%) to {len(self.symbols)} securities")
-
-        # Apply custom fill model ONLY when using PythonData.
-        # In LEAN-native mode (TradeBar/Crypto), LEAN's default fill model already has correct OHLC.
-        if self.use_custom_data_mode:
-            # LEAN's default fill model reads Security.High/Low which are always Close for PythonData.
-            # CustomDataFillModel reads OHLC from PythonData's DynamicData storage instead.
-            try:
-                from clr import AddReference
-
-                AddReference("CustomDataFillModel")
-                from QuantConnect.Lean.Engine.FillModels import CustomDataFillModel
-
-                for sym_key, sym_obj in self.symbols.items():
-                    self.Securities[sym_obj].SetFillModel(CustomDataFillModel())
-                self.Log(f"   Applied CustomDataFillModel to {len(self.symbols)} securities (custom data mode)")
-            except Exception as e:
-                self.Log(f"   CustomDataFillModel not available ({e}), using default fill model")
 
         # Initialize indicators - unified registry pattern
         # Maps indicator_id -> (category, indicator_or_data)
@@ -321,25 +215,21 @@ class StrategyRuntime(QCAlgorithm):
         self.Log(f"   Pydantic: v{PYDANTIC_VERSION} ✓")
 
     def _add_symbol(self, symbol_str: str) -> Symbol:
-        """Add symbol subscription based on selected data mode."""
-        if self.use_custom_data_mode:
-            # PythonData CSV path (legacy + synthetic tests)
-            return add_symbol(
-                symbol_str=symbol_str,
-                resolution=self.resolution,
-                add_data_func=self.AddData,
-                log_func=self.Log,
-                custom_data_class=CustomCryptoData,  # Defined in this file
-            )
+        """Add LEAN-native crypto subscription via AddCrypto().
 
-        # LEAN-native crypto subscription:
-        # - Uses LEAN data layout (/Data/crypto/{market}/minute/{symbol}/...)
-        # - Avoids PythonData DynamicData OHLC hacks and custom fill model
+        Uses LEAN data layout (/Data/crypto/{market}/{resolution}/{symbol}/...)
+        which gives TradeBar with correct OHLC for indicators and fill model.
+
+        fill_forward=False: We provide our own data in all scenarios (ZIP files
+        for backtests/tests, PubSub for live). Fill-forward would fabricate
+        synthetic bars for gaps in our data, causing OnData to fire on stale
+        prices and producing spurious trades.
+        """
         lean_ticker = symbol_str.replace("-", "").upper()
-        market = os.getenv("LEAN_CRYPTO_MARKET", "coinbase")  # folder name under /Data/crypto/
-        security = self.AddCrypto(lean_ticker, self.resolution, market)
+        market = os.getenv("LEAN_CRYPTO_MARKET", "coinbase")
+        security = self.AddCrypto(lean_ticker, self.resolution, market, False)
 
-        # Ensure fractional orders (consistent with previous custom data configuration)
+        # Ensure fractional orders for crypto
         security.SymbolProperties = SymbolProperties(
             description=symbol_str,
             quoteCurrency="USD",
@@ -647,6 +537,25 @@ class StrategyRuntime(QCAlgorithm):
 
     def OnEndOfAlgorithm(self):
         """Called when algorithm ends."""
+        # Append a final equity snapshot BEFORE closing lots, so the curve
+        # reflects the state with open positions (important for short backtests
+        # where the sample_interval may skip intermediate bars).
+        from execution.types import EquityPoint
+        pre_close_equity = float(self.Portfolio.TotalPortfolioValue)
+        pre_close_cash = float(self.Portfolio.Cash)
+        pre_close_holdings = pre_close_equity - pre_close_cash
+        pre_close_dd = ((self.tracking.peak_equity - pre_close_equity) / self.tracking.peak_equity * 100
+                        if self.tracking.peak_equity > 0 else 0)
+        self.tracking.equity_curve.append(
+            EquityPoint(
+                time=str(self.Time),
+                equity=pre_close_equity,
+                cash=pre_close_cash,
+                holdings=pre_close_holdings,
+                drawdown=float(pre_close_dd),
+            )
+        )
+
         # Close any open lots and record as trades
         if self.tracking.current_lots and self.Portfolio.Invested:
             raw_price = float(self.Portfolio[self.symbol].Price)
