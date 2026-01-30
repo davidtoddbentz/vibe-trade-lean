@@ -6,7 +6,7 @@ LEAN types are imported under TYPE_CHECKING (runtime-only in Docker).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from execution.types import FillInfo
@@ -26,3 +26,9 @@ class ExecutionContext:
     liquidate: Callable  # self.Liquidate
     log: Callable[[str], None]  # self.Log
     get_last_fill: Callable[[], FillInfo | None]  # self._get_and_clear_last_fill
+
+    # Non-market order APIs (kept for future use if LEAN fill model is fixed)
+    limit_order: Callable  # self.LimitOrder
+    stop_market_order: Callable  # self.StopMarketOrder
+    stop_limit_order: Callable  # self.StopLimitOrder
+    resolve_value: Callable  # self._resolve_value (ValueRef → float)

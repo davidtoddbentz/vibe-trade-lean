@@ -83,6 +83,12 @@ def execute_entry(
     qty_after = float(ctx.portfolio[ctx.symbol].Quantity)
     lot_quantity = abs(qty_after - qty_before)
 
+    # For typed orders (limit/stop/stop_limit), Python-side fill simulation
+    # either executes a MarketOrder (condition met) or skips (condition not met).
+    # In both cases, lot_quantity == 0 means no fill occurred on this bar.
+    if lot_quantity == 0:
+        return None
+
     # Detect direction from allocation or quantity
     if isinstance(action, SetHoldingsAction):
         allocation = action.allocation

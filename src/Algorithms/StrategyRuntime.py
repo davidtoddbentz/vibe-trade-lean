@@ -268,6 +268,10 @@ class StrategyRuntime(QCAlgorithm):
             liquidate=self.Liquidate,
             log=self.Log,
             get_last_fill=self._get_and_clear_last_fill,
+            limit_order=self.LimitOrder,
+            stop_market_order=self.StopMarketOrder,
+            stop_limit_order=self.StopLimitOrder,
+            resolve_value=self._resolve_value,
         )
 
         # Crossover detection state
