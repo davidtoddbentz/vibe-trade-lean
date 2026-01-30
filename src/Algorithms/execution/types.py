@@ -53,6 +53,19 @@ class ClosedLot:
 
 
 @dataclass
+class PendingEntry:
+    """Metadata for a limit/stop order awaiting fill.
+
+    Created when execute_entry places a non-market order. When OnOrderEvent
+    fires with Status=Filled, the lot is created from this + fill info.
+    """
+    order_id: int
+    direction: str  # "long" or "short"
+    entry_bar: int
+    on_fill_ops: list = field(default_factory=list)  # StateOp list from entry_rule
+
+
+@dataclass
 class EquityPoint:
     """A single equity curve sample."""
     time: str
@@ -86,3 +99,5 @@ class TrackingState:
     peak_equity: float = 0.0
     max_drawdown: float = 0.0
     bar_count: int = 0
+    pending_entry: PendingEntry | None = None  # For deferred limit/stop fills
+    deferred_on_fill_ops: list = field(default_factory=list)  # StateOps to run on next OnData

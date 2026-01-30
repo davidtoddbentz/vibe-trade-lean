@@ -102,6 +102,28 @@ RUN if [ -f /Lean/Launcher/bin/Debug/PubSubDataQueueHandler.dll ]; then \
 COPY scripts/ /scripts/
 RUN chmod +x /scripts/*.sh /scripts/*.py
 
+# Copy StrategyRuntime + modular Python packages into the image
+# These are required when mounting only `StrategyRuntime.py` in tests or when
+# running the backtest service which imports `indicators/`, `conditions/`, etc.
+RUN mkdir -p /Lean/Algorithm.Python /Lean/src
+COPY src/data/ /Lean/src/data/
+COPY src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/
+COPY src/Algorithms/indicators/ /Lean/Algorithm.Python/indicators/
+COPY src/Algorithms/conditions/ /Lean/Algorithm.Python/conditions/
+COPY src/Algorithms/trades/ /Lean/Algorithm.Python/trades/
+COPY src/Algorithms/position/ /Lean/Algorithm.Python/position/
+COPY src/Algorithms/gates/ /Lean/Algorithm.Python/gates/
+COPY src/Algorithms/costs/ /Lean/Algorithm.Python/costs/
+COPY src/Algorithms/symbols/ /Lean/Algorithm.Python/symbols/
+COPY src/Algorithms/ir/ /Lean/Algorithm.Python/ir/
+COPY src/Algorithms/execution/ /Lean/Algorithm.Python/execution/
+COPY src/Algorithms/initialization/ /Lean/Algorithm.Python/initialization/
+COPY src/Algorithms/state/ /Lean/Algorithm.Python/state/
+COPY src/serve_backtest.py /Lean/serve_backtest.py
+
+# Ensure modular packages are importable by LEAN's Python runtime
+ENV PYTHONPATH="/Lean/Algorithm.Python:/Lean/Launcher/bin/Debug:${PYTHONPATH}"
+
 # Create Data directory
 RUN mkdir -p /Data
 

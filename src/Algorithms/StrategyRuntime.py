@@ -11,6 +11,7 @@ The IR is passed via:
 
 from AlgorithmImports import *
 import json
+import os
 from indicators import (
     IndicatorCategory,
     resolve_value as _resolve_value_impl,
@@ -27,7 +28,7 @@ from vibe_trade_shared.models.ir import (
     StateOp,
 )
 from conditions import evaluate_condition as registry_evaluate_condition
-from trades import close_lots_at_end, generate_report
+from trades import close_lots_at_end, create_lot, generate_report
 from position import (
     can_accumulate,
     track_equity,
@@ -165,13 +166,27 @@ class StrategyRuntime(QCAlgorithm):
         # See: https://www.quantconnect.com/forum/discussion/2978/minimum-order-clip-size/
         self.Settings.MinimumOrderMarginPortfolioPercentage = 0
 
-        # Set data folder FIRST - before any subscriptions
-        setup_data_folder(
-            data_folder_param=self.GetParameter("data_folder"),
-            custom_data_class=CustomCryptoData,
-            log_func=self.Log,
-            debug_func=self.Debug,
-        )
+        # Mode selection:
+        # - Custom data mode (default): uses PythonData (CustomCryptoData) + CSV files in /Data
+        #   Works with any symbol, any resolution. Used for backtesting.
+        # - LEAN-native mode: uses AddCrypto + LEAN data layout (/Data/crypto/{market}/...)
+        #   Requires symbols in LEAN's symbol-properties DB. Used for live trading.
+        #   Opt-in via USE_LEAN_NATIVE_DATA=true env var or parameter.
+        use_native_env = os.getenv("USE_LEAN_NATIVE_DATA", "").strip().lower()
+        use_native_param = (self.GetParameter("use_lean_native_data") or "").strip().lower()
+        self.use_custom_data_mode = not ((use_native_env == "true") or (use_native_param == "true"))
+
+        # Data folder parameter is still used for IR IO and outputs
+        self.data_folder = self.GetParameter("data_folder") or "/Data"
+
+        # Only configure CustomCryptoData folder when using PythonData CSV ingestion
+        if self.use_custom_data_mode:
+            setup_data_folder(
+                data_folder_param=self.data_folder,
+                custom_data_class=CustomCryptoData,
+                log_func=self.Log,
+                debug_func=self.Debug,
+            )
 
         # Get date parameters and set up dates
         self.trading_start_date, initial_cash = setup_dates(
@@ -196,7 +211,8 @@ class StrategyRuntime(QCAlgorithm):
             if not ir_path:
                 ir_path = "/Data/strategy_ir.json"
             self.Debug(f"Loading IR from: {ir_path}")
-            ir_dict = load_ir_from_file(ir_path, CustomCryptoData.DataFolder)
+            # Use selected data folder (CustomCryptoData.DataFolder only exists/changes in custom mode)
+            ir_dict = load_ir_from_file(ir_path, self.data_folder)
         self.ir = StrategyIR.model_validate(ir_dict)
 
         # Set resolution (must be before _add_symbol which uses it)
@@ -228,6 +244,23 @@ class StrategyRuntime(QCAlgorithm):
             for sym_key, sym_obj in self.symbols.items():
                 self.Securities[sym_obj].SetSlippageModel(ConstantSlippageModel(slippage_decimal))
             self.Log(f"   Applied ConstantSlippageModel({self.slippage_pct}%) to {len(self.symbols)} securities")
+
+        # Apply custom fill model ONLY when using PythonData.
+        # In LEAN-native mode (TradeBar/Crypto), LEAN's default fill model already has correct OHLC.
+        if self.use_custom_data_mode:
+            # LEAN's default fill model reads Security.High/Low which are always Close for PythonData.
+            # CustomDataFillModel reads OHLC from PythonData's DynamicData storage instead.
+            try:
+                from clr import AddReference
+
+                AddReference("CustomDataFillModel")
+                from QuantConnect.Lean.Engine.FillModels import CustomDataFillModel
+
+                for sym_key, sym_obj in self.symbols.items():
+                    self.Securities[sym_obj].SetFillModel(CustomDataFillModel())
+                self.Log(f"   Applied CustomDataFillModel to {len(self.symbols)} securities (custom data mode)")
+            except Exception as e:
+                self.Log(f"   CustomDataFillModel not available ({e}), using default fill model")
 
         # Initialize indicators - unified registry pattern
         # Maps indicator_id -> (category, indicator_or_data)
@@ -289,14 +322,36 @@ class StrategyRuntime(QCAlgorithm):
         self.Log(f"   Pydantic: v{PYDANTIC_VERSION} ✓")
 
     def _add_symbol(self, symbol_str: str) -> Symbol:
-        """Add symbol using custom data reader for CSV files."""
-        return add_symbol(
-            symbol_str=symbol_str,
-            resolution=self.resolution,
-            add_data_func=self.AddData,
-            log_func=self.Log,
-            custom_data_class=CustomCryptoData,  # Defined in this file
+        """Add symbol subscription based on selected data mode."""
+        if self.use_custom_data_mode:
+            # PythonData CSV path (legacy + synthetic tests)
+            return add_symbol(
+                symbol_str=symbol_str,
+                resolution=self.resolution,
+                add_data_func=self.AddData,
+                log_func=self.Log,
+                custom_data_class=CustomCryptoData,  # Defined in this file
+            )
+
+        # LEAN-native crypto subscription:
+        # - Uses LEAN data layout (/Data/crypto/{market}/minute/{symbol}/...)
+        # - Avoids PythonData DynamicData OHLC hacks and custom fill model
+        lean_ticker = symbol_str.replace("-", "").upper()
+        market = os.getenv("LEAN_CRYPTO_MARKET", "coinbase")  # folder name under /Data/crypto/
+        security = self.AddCrypto(lean_ticker, self.resolution, market)
+
+        # Ensure fractional orders (consistent with previous custom data configuration)
+        security.SymbolProperties = SymbolProperties(
+            description=symbol_str,
+            quoteCurrency="USD",
+            contractMultiplier=1,
+            minimumPriceVariation=0.01,
+            lotSize=0.00000001,
+            marketTicker=symbol_str,
+            minimumOrderSize=0.00000001,
         )
+        self.Log(f"   Added crypto: {symbol_str} as {lean_ticker} (market={market}, lot_size=0.00000001)")
+        return security.Symbol
 
     def _normalize_symbol(self, symbol_str: str) -> str:
         """Normalize symbol string for dictionary keys."""
@@ -331,7 +386,25 @@ class StrategyRuntime(QCAlgorithm):
         if self.symbol not in data:
             return
 
+        # Cancel unfilled orders from previous bar.
+        # Fill evaluation happens BEFORE OnData, so if the order filled,
+        # OnOrderEvent(Filled) already fired and the lot was created.
+        # If it didn't fill, cancel and re-evaluate conditions.
+        open_orders = self.Transactions.GetOpenOrders(self.symbol)
+        if open_orders and len(open_orders) > 0:
+            self.Transactions.CancelOpenOrders(self.symbol)
+            # Clear pending entry — the order was cancelled, not filled
+            if self.tracking.pending_entry is not None:
+                self.Log(f"⏹ Pending entry cancelled (OrderId={self.tracking.pending_entry.order_id})")
+                self.tracking.pending_entry = None
+
         bar = data[self.symbol]
+
+        # Execute deferred on_fill state ops from limit/stop fills (queued in OnOrderEvent)
+        if self.tracking.deferred_on_fill_ops:
+            for op in self.tracking.deferred_on_fill_ops:
+                self._execute_state_op(op, bar)
+            self.tracking.deferred_on_fill_ops.clear()
 
         # Reset daily entry counter on new calendar day
         current_date = str(self.Time.date())
@@ -475,8 +548,8 @@ class StrategyRuntime(QCAlgorithm):
         return registry_evaluate_condition(condition, bar, self)
 
     def _execute_action(self, action: EntryAction | ExitAction, bar=None):
-        """Execute an action from IR."""
-        execute_action(action=action, ctx=self._exec_ctx, bar=bar)
+        """Execute an action from IR. Returns order_id for non-market orders."""
+        return execute_action(action=action, ctx=self._exec_ctx, bar=bar)
 
     def _resolve_value(self, value_ref, bar):
         """Resolve a ValueRef to a float for state ops and other runtime use."""
@@ -503,14 +576,31 @@ class StrategyRuntime(QCAlgorithm):
     def OnOrderEvent(self, orderEvent):
         """Capture LEAN fill prices and fees for lot tracking.
 
-        When LEAN fills an order, it applies slippage and fees. We store the
-        fill info so lot tracking can use actual fill prices instead of bar close.
+        Handles two fill paths:
+        1. Market orders: synchronous fill during execute_entry. FillInfo is
+           stored for the lot tracker to pick up immediately.
+        2. Limit/stop orders: deferred fill on a subsequent bar. A PendingEntry
+           is stored by execute_entry; here we create the lot when the fill arrives.
+
+        Also clears pending_entry on terminal failure statuses (Invalid, Canceled)
+        to prevent stale state from blocking future entries.
         """
-        if orderEvent.Status != OrderStatus.Filled:
+        # Clear pending_entry on terminal failure statuses
+        status = orderEvent.Status
+        if status in (OrderStatus.Invalid, OrderStatus.Canceled):
+            order_id = int(orderEvent.OrderId)
+            pending = self.tracking.pending_entry
+            if pending is not None and pending.order_id == order_id:
+                self.Log(f"⚠ Pending entry cleared: OrderId={order_id}, Status={status}")
+                self.tracking.pending_entry = None
+            return
+
+        if status != OrderStatus.Filled:
             return
 
         fill_price = float(orderEvent.FillPrice)
         fill_qty = float(orderEvent.FillQuantity)
+        order_id = int(orderEvent.OrderId)
 
         # Get the order fee from the event
         order_fee = 0.0
@@ -519,7 +609,37 @@ class StrategyRuntime(QCAlgorithm):
         except (AttributeError, Exception):
             pass
 
-        # Store fill info for the lot tracker to pick up
+        # Check if this fill matches a pending entry (deferred limit/stop order)
+        pending = self.tracking.pending_entry
+        if pending is not None and pending.order_id == order_id:
+            # Deferred fill — create the lot now
+            lot = create_lot(
+                lot_id=len(self.tracking.current_lots),
+                symbol=str(self.symbol),
+                direction=pending.direction,
+                entry_time=self.Time,
+                entry_price=fill_price,
+                entry_bar=pending.entry_bar,
+                quantity=abs(fill_qty),
+                entry_fee=order_fee,
+            )
+            self.tracking.current_lots.append(lot)
+            self.tracking.last_entry_bar = pending.entry_bar
+
+            # Queue on_fill hooks for next OnData (they need bar data for resolve_value)
+            if pending.on_fill_ops:
+                self.tracking.deferred_on_fill_ops.extend(pending.on_fill_ops)
+
+            lot_num = len(self.tracking.current_lots)
+            if lot_num > 1:
+                self.Log(f"🟢 ENTRY FILLED (lot #{lot_num}) @ ${fill_price:.2f} | qty: {abs(fill_qty):.6f} (OrderId={order_id})")
+            else:
+                self.Log(f"🟢 ENTRY FILLED @ ${fill_price:.2f} (OrderId={order_id})")
+
+            self.tracking.pending_entry = None
+            return
+
+        # Market order fill — store for synchronous lot creation in execute_entry
         self._last_fill = FillInfo(
             price=fill_price,
             quantity=fill_qty,
@@ -605,7 +725,7 @@ class StrategyRuntime(QCAlgorithm):
 
         # Write structured output to JSON file
         import os
-        output_path = os.path.join(CustomCryptoData.DataFolder, "strategy_output.json")
+        output_path = os.path.join(self.data_folder, "strategy_output.json")
         try:
             with open(output_path, "w") as f:
                 json.dump(output, f, indent=2)

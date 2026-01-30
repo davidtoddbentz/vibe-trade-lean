@@ -50,6 +50,15 @@ RUN if [ -n "$GITHUB_TOKEN" ]; then \
 # Create directories
 RUN mkdir -p /Lean/src
 
+# Compile C# custom fill model (reads OHLC from PythonData for correct limit/stop fills)
+COPY src/FillModels/CustomDataFillModel.cs /Lean/CustomFillModel/
+COPY csproj/CustomDataFillModel.csproj /Lean/CustomFillModel/
+RUN cd /Lean/CustomFillModel && \
+    dotnet restore && \
+    dotnet build -c Release && \
+    cp bin/Release/net*/CustomDataFillModel.dll /Lean/Launcher/bin/Debug/ && \
+    echo "✅ CustomDataFillModel compiled"
+
 # Copy Python modules
 COPY src/data/ /Lean/src/data/
 COPY src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/

@@ -17,10 +17,39 @@ from vibe_trade_shared.models.ir import (
     Condition,
     StateOp,
 )
-from execution.types import Lot, TrackingState
+from execution.types import Lot, PendingEntry, TrackingState
 from execution.context import ExecutionContext
 from trades import create_lot, close_lots, split_lot
 from position import apply_scale_in, apply_overlay_scale, compute_overlay_scale
+
+
+def _detect_direction(
+    action: SetHoldingsAction | MarketOrderAction | Any,
+    qty_after: float | None = None,
+) -> str:
+    """Detect long/short direction from an action.
+
+    For pct_equity: allocation sign determines direction.
+    For fixed_usd/fixed_units: the fixed_usd/fixed_units sign determines direction
+    (allocation is 0.0 for these modes).
+    For MarketOrderAction: quantity sign determines direction.
+    Falls back to qty_after (portfolio position) if available.
+    """
+    if isinstance(action, SetHoldingsAction):
+        if action.sizing_mode == "fixed_usd" and action.fixed_usd is not None:
+            return "short" if action.fixed_usd < 0 else "long"
+        if action.sizing_mode == "fixed_units" and action.fixed_units is not None:
+            return "short" if action.fixed_units < 0 else "long"
+        # pct_equity or fallback: use allocation sign
+        if action.allocation < 0:
+            return "short"
+    elif isinstance(action, MarketOrderAction):
+        if action.quantity < 0:
+            return "short"
+    # Fallback to portfolio position (for market orders after fill)
+    if qty_after is not None and qty_after < 0:
+        return "short"
+    return "long"
 
 
 def execute_entry(
@@ -76,27 +105,38 @@ def execute_entry(
     if isinstance(action, SetHoldingsAction):
         action = apply_overlay_scale(action, overlay_scale, ctx.log)
 
-    # Execute action (modifies portfolio, triggers OnOrderEvent synchronously)
-    execute_action_func(action, bar)
+    # Check if this is a non-market order (limit/stop/stop_limit)
+    is_deferred = (
+        isinstance(action, SetHoldingsAction)
+        and action.order_type != "market"
+    )
 
-    # Calculate lot quantity (delta from before)
+    # Execute action (modifies portfolio for market orders, places order for typed)
+    order_id = execute_action_func(action, bar)
+
+    if is_deferred and order_id is not None:
+        # Non-market order placed — lot creation deferred to OnOrderEvent fill
+        direction = _detect_direction(action)
+
+        tracking.pending_entry = PendingEntry(
+            order_id=order_id,
+            direction=direction,
+            entry_bar=tracking.bar_count,
+            on_fill_ops=entry_rule.on_fill or [],
+        )
+        tracking.entries_today += 1
+        ctx.log(f"⏳ ENTRY ORDER placed (OrderId={order_id}), awaiting fill")
+        return tracking.bar_count
+
+    # Market order: synchronous fill — create lot immediately
     qty_after = float(ctx.portfolio[ctx.symbol].Quantity)
     lot_quantity = abs(qty_after - qty_before)
 
-    # For typed orders (limit/stop/stop_limit), Python-side fill simulation
-    # either executes a MarketOrder (condition met) or skips (condition not met).
-    # In both cases, lot_quantity == 0 means no fill occurred on this bar.
     if lot_quantity == 0:
         return None
 
-    # Detect direction from allocation or quantity
-    if isinstance(action, SetHoldingsAction):
-        allocation = action.allocation
-    elif isinstance(action, MarketOrderAction):
-        allocation = 1.0 if action.quantity > 0 else -1.0
-    else:
-        allocation = 0.95  # Default fallback
-    direction = "short" if allocation < 0 or qty_after < 0 else "long"
+    # Detect direction from action or portfolio position
+    direction = _detect_direction(action, qty_after)
 
     # Use LEAN's actual fill price/fee if available, else fall back to bar close
     fill = ctx.get_last_fill()

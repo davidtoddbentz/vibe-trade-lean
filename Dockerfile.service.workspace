@@ -42,6 +42,15 @@ RUN pip install --no-cache-dir /vibe-trade-shared && \
 
 RUN mkdir -p /Lean/src
 
+# Compile C# custom fill model (reads OHLC from PythonData for correct limit/stop fills)
+COPY vibe-trade-lean/src/FillModels/CustomDataFillModel.cs /Lean/CustomFillModel/
+COPY vibe-trade-lean/csproj/CustomDataFillModel.csproj /Lean/CustomFillModel/
+RUN cd /Lean/CustomFillModel && \
+    dotnet restore && \
+    dotnet build -c Release && \
+    cp bin/Release/net*/CustomDataFillModel.dll /Lean/Launcher/bin/Debug/ && \
+    echo "✅ CustomDataFillModel compiled"
+
 # Copy LEAN code (paths relative to workspace root)
 COPY vibe-trade-lean/src/data/ /Lean/src/data/
 COPY vibe-trade-lean/src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/

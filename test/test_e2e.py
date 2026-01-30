@@ -127,6 +127,7 @@ def run_lean_backtest(
     timeout: int = 120,
     start_date: str = "20240101",
     end_date: str = "20240101",
+    use_custom_data_mode: bool = True,
 ) -> tuple[int, str, str]:
     """Run LEAN backtest with given data and strategy.
 
@@ -199,6 +200,10 @@ def run_lean_backtest(
     # Run LEAN in Docker
     cmd = [
         "docker", "run", "--rm",
+        # Ensure StrategyRuntime can import the packaged modules copied into the image
+        "-e", "PYTHONPATH=/Lean/Algorithm.Python:/Lean/Launcher/bin/Debug",
+        # Default to legacy CustomCryptoData CSV ingestion for these E2E tests
+        *(["-e", "USE_CUSTOM_DATA_MODE=true"] if use_custom_data_mode else []),
         "-v", f"{data_dir}:/Data",
         "-v", f"{results_dir}:/Results",
         "-v", f"{PROJECT_DIR}/src/Algorithms/StrategyRuntime.py:/Data/algorithms/StrategyRuntime.py:ro",
@@ -351,6 +356,19 @@ class TestTrendPullback:
         # Check strategy loaded
         assert "Loaded strategy" in output or "Strategy:" in output, \
             f"Strategy did not load. Output: {output[:1000]}"
+
+    def test_strategy_loads_with_lean_trade_zip(self, docker_image, temp_data_dir, strategy_ir):
+        """Strategy loads using LEAN-native TradeBar zip data + AddCrypto path."""
+        candles, _ = generate_uptrend_with_pullback(n_bars=100)
+        write_lean_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
+
+        returncode, stdout, stderr = run_lean_backtest(
+            temp_data_dir, strategy_ir, timeout=60, use_custom_data_mode=False,
+        )
+
+        output = stdout + stderr
+        assert "Loaded strategy" in output or "Strategy:" in output, \
+            f"Strategy did not load (LEAN zip mode). Output: {output[:1000]}"
 
     @pytest.mark.skip(reason="Needs data/strategy tuning - custom data loading works but entry conditions not met")
     def test_entry_on_pullback(self, docker_image, temp_data_dir, strategy_ir):

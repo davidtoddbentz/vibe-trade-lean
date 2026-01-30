@@ -102,99 +102,23 @@ def _compute_quantity(
     return quantity
 
 
-def _bar_ohlc(bar: Any) -> tuple[float, float, float, float]:
-    """Extract OHLC from a PythonData bar.
-
-    PythonData stores OHLC as custom properties set via bracket notation
-    in Reader(). Access them directly via bar["Key"] rather than
-    GetStorageDictionary() which has cross-language interop issues.
-    Falls back to bar.Close for any missing field.
-    """
-    close = float(bar.Close)
-    try:
-        o = float(bar["Open"])
-    except Exception:
-        o = close
-    try:
-        h = float(bar["High"])
-    except Exception:
-        h = close
-    try:
-        l = float(bar["Low"])
-    except Exception:
-        l = close
-    try:
-        c = float(bar["Close"])
-    except Exception:
-        c = close
-    return o, h, l, c
-
-
-def _check_fill_condition(
-    order_type: str,
-    quantity: float,
-    limit_price: float | None,
-    stop_price: float | None,
-    bar_high: float,
-    bar_low: float,
-) -> bool:
-    """Check whether a typed order would fill on this bar's OHLC range.
-
-    For buy orders (quantity > 0):
-      - limit: fills if bar Low <= limit_price (price came down to limit)
-      - stop:  fills if bar High >= stop_price (price rose to trigger)
-      - stop_limit: stop triggered (High >= stop) AND limit fillable (Low <= limit)
-
-    For sell orders (quantity < 0):
-      - limit: fills if bar High >= limit_price (price rose to limit)
-      - stop:  fills if bar Low <= stop_price (price fell to trigger)
-      - stop_limit: stop triggered (Low <= stop) AND limit fillable (High >= limit)
-    """
-    is_buy = quantity > 0
-
-    if order_type == "limit":
-        if is_buy:
-            return bar_low <= limit_price
-        else:
-            return bar_high >= limit_price
-
-    elif order_type == "stop":
-        if is_buy:
-            return bar_high >= stop_price
-        else:
-            return bar_low <= stop_price
-
-    elif order_type == "stop_limit":
-        if is_buy:
-            stop_triggered = bar_high >= stop_price
-            limit_fillable = bar_low <= limit_price
-            return stop_triggered and limit_fillable
-        else:
-            stop_triggered = bar_low <= stop_price
-            limit_fillable = bar_high >= limit_price
-            return stop_triggered and limit_fillable
-
-    return False
-
-
 def _execute_typed_order(
     action: SetHoldingsAction,
     ctx: ExecutionContext,
     bar: Any,
-) -> None:
-    """Execute a non-market order (limit, stop, stop_limit) via Python-side fill simulation.
+) -> int | None:
+    """Execute a non-market order via LEAN's native order APIs.
 
-    LEAN's fill model cannot see High/Low from PythonData custom data (security.High/Low
-    always equal the close price). Instead of using LEAN's native LimitOrder/StopMarketOrder
-    APIs, we check bar OHLC against the limit/stop prices in Python and execute as a
-    MarketOrder if the fill condition is met.
+    CustomDataFillModel (C#) overrides GetPrices() to read OHLC from
+    PythonData's DynamicData storage, so LEAN's fill model handles
+    fill conditions and prices correctly.
 
-    This gives correct fill semantics while keeping all logic in Python.
+    Returns the LEAN OrderId if an order was placed, or None if skipped.
     """
     order_type = action.order_type
     quantity = _compute_quantity(action, ctx, bar)
     if quantity is None:
-        return
+        return None
 
     # Resolve price refs via ctx.resolve_value(value_ref, bar) -> float
     limit_price = None
@@ -204,49 +128,36 @@ def _execute_typed_order(
         limit_price = ctx.resolve_value(action.limit_price_ref, bar)
         if limit_price is None or limit_price <= 0:
             ctx.log(f"   Invalid limit price: {limit_price}, skipping {order_type} order")
-            return
+            return None
 
     if action.stop_price_ref is not None:
         stop_price = ctx.resolve_value(action.stop_price_ref, bar)
         if stop_price is None or stop_price <= 0:
             ctx.log(f"   Invalid stop price: {stop_price}, skipping {order_type} order")
-            return
+            return None
 
-    # Extract OHLC from bar (PythonData stores in storage dictionary)
-    _, bar_high, bar_low, _ = _bar_ohlc(bar)
+    # Place native LEAN order — CustomDataFillModel handles fill logic
+    ticket = None
+    if order_type == "limit":
+        ticket = ctx.limit_order(ctx.symbol, quantity, limit_price)
+        ctx.log(f"   Limit order placed: {quantity:.6f} units @ limit=${limit_price:.2f} (OrderId={ticket.OrderId})")
+    elif order_type == "stop":
+        ticket = ctx.stop_market_order(ctx.symbol, quantity, stop_price)
+        ctx.log(f"   Stop order placed: {quantity:.6f} units @ stop=${stop_price:.2f} (OrderId={ticket.OrderId})")
+    elif order_type == "stop_limit":
+        ticket = ctx.stop_limit_order(ctx.symbol, quantity, stop_price, limit_price)
+        ctx.log(f"   Stop-limit order placed: {quantity:.6f} units @ stop=${stop_price:.2f}, limit=${limit_price:.2f} (OrderId={ticket.OrderId})")
 
-    # Check if fill condition is met on this bar
-    if _check_fill_condition(order_type, quantity, limit_price, stop_price, bar_high, bar_low):
-        # Fill condition met — execute as MarketOrder
-        ctx.market_order(ctx.symbol, quantity)
-        price_info = []
-        if limit_price is not None:
-            price_info.append(f"limit=${limit_price:.2f}")
-        if stop_price is not None:
-            price_info.append(f"stop=${stop_price:.2f}")
-        ctx.log(
-            f"   {order_type.replace('_', '-').title()} filled: "
-            f"{quantity:.6f} units ({', '.join(price_info)}) | "
-            f"bar range [${bar_low:.2f}, ${bar_high:.2f}]"
-        )
-    else:
-        # Fill condition NOT met — no order placed, will re-evaluate next bar
-        price_info = []
-        if limit_price is not None:
-            price_info.append(f"limit=${limit_price:.2f}")
-        if stop_price is not None:
-            price_info.append(f"stop=${stop_price:.2f}")
-        ctx.log(
-            f"   {order_type.replace('_', '-').title()} not filled: "
-            f"{', '.join(price_info)} | bar range [${bar_low:.2f}, ${bar_high:.2f}]"
-        )
+    if ticket is not None:
+        return int(ticket.OrderId)
+    return None
 
 
 def execute_action(
     action: EntryAction | ExitAction,
     ctx: ExecutionContext,
     bar: Any = None,
-) -> None:
+) -> int | None:
     """Execute an action from IR.
 
     Supports multiple sizing modes for set_holdings:
@@ -261,15 +172,18 @@ def execute_action(
         action: Typed action from IR (SetHoldingsAction, LiquidateAction, MarketOrderAction)
         ctx: ExecutionContext bundle for LEAN primitives
         bar: Current bar data (used for fixed_usd/fixed_units pricing)
+
+    Returns:
+        LEAN OrderId for non-market orders (needed for deferred lot creation),
+        or None for market orders and other action types.
     """
     if not action:
-        return
+        return None
 
     if isinstance(action, SetHoldingsAction):
         # Non-market orders: compute quantity and dispatch to typed order API
         if action.order_type != "market":
-            _execute_typed_order(action, ctx, bar)
-            return
+            return _execute_typed_order(action, ctx, bar)
 
         # Market orders: existing logic (SetHoldings for pct_equity, MarketOrder for others)
         sizing_mode = action.sizing_mode
