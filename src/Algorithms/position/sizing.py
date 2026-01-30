@@ -132,6 +132,16 @@ def apply_overlay_scale(
         action = action.model_copy(update={"allocation": original_allocation * overlay_scale})
         log_func(f"   Position scaled: {original_allocation} -> {action.allocation}")
 
+    elif action.sizing_mode == "fixed_usd" and action.fixed_usd is not None:
+        original_usd = action.fixed_usd
+        action = action.model_copy(update={"fixed_usd": original_usd * overlay_scale})
+        log_func(f"   Position scaled: ${original_usd:.2f} -> ${action.fixed_usd:.2f}")
+
+    elif action.sizing_mode == "fixed_units" and action.fixed_units is not None:
+        original_units = action.fixed_units
+        action = action.model_copy(update={"fixed_units": original_units * overlay_scale})
+        log_func(f"   Position scaled: {original_units:.6f} -> {action.fixed_units:.6f} units")
+
     return action
 
 

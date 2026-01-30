@@ -514,6 +514,7 @@ class StrategyRuntime(QCAlgorithm):
             )
             self.tracking.current_lots.append(lot)
             self.tracking.last_entry_bar = pending.entry_bar
+            self.tracking.entries_today += 1
 
             # Queue on_fill hooks for next OnData (they need bar data for resolve_value)
             if pending.on_fill_ops:

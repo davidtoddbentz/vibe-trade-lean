@@ -124,7 +124,8 @@ def execute_entry(
             entry_bar=tracking.bar_count,
             on_fill_ops=entry_rule.on_fill or [],
         )
-        tracking.entries_today += 1
+        # Note: entries_today is incremented on FILL (in OnOrderEvent), not placement.
+        # This allows cancelled unfilled orders to not consume the daily entry budget.
         ctx.log(f"⏳ ENTRY ORDER placed (OrderId={order_id}), awaiting fill")
         return tracking.bar_count
 
