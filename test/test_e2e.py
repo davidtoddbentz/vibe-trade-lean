@@ -127,7 +127,7 @@ def run_lean_backtest(
     timeout: int = 120,
     start_date: str = "20240101",
     end_date: str = "20240101",
-    use_custom_data_mode: bool = True,
+    use_custom_data_mode: bool = False,
 ) -> tuple[int, str, str]:
     """Run LEAN backtest with given data and strategy.
 
@@ -202,7 +202,7 @@ def run_lean_backtest(
         "docker", "run", "--rm",
         # Ensure StrategyRuntime can import the packaged modules copied into the image
         "-e", "PYTHONPATH=/Lean/Algorithm.Python:/Lean/Launcher/bin/Debug",
-        # Default to legacy CustomCryptoData CSV ingestion for these E2E tests
+        # Opt-in to legacy CustomCryptoData CSV ingestion (default is AddCrypto)
         *(["-e", "USE_CUSTOM_DATA_MODE=true"] if use_custom_data_mode else []),
         "-v", f"{data_dir}:/Data",
         "-v", f"{results_dir}:/Results",
@@ -344,7 +344,7 @@ class TestTrendPullback:
         """Test that the strategy loads successfully."""
         # Generate minimal data
         candles, _ = generate_uptrend_with_pullback(n_bars=100)
-        write_custom_csv_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
+        write_lean_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
 
         returncode, stdout, stderr = run_lean_backtest(
             temp_data_dir, strategy_ir, timeout=60,
@@ -363,7 +363,7 @@ class TestTrendPullback:
         write_lean_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
 
         returncode, stdout, stderr = run_lean_backtest(
-            temp_data_dir, strategy_ir, timeout=60, use_custom_data_mode=False,
+            temp_data_dir, strategy_ir, timeout=60,
         )
 
         output = stdout + stderr
@@ -378,7 +378,7 @@ class TestTrendPullback:
             n_bars=200,
             pullback_bar=100,
         )
-        write_custom_csv_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
+        write_lean_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
 
         returncode, stdout, stderr = run_lean_backtest(
             temp_data_dir, strategy_ir, timeout=120,
@@ -411,7 +411,7 @@ class TestTrendPullback:
             n_bars=200,
             pullback_bar=100,
         )
-        write_custom_csv_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
+        write_lean_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
 
         returncode, stdout, stderr = run_lean_backtest(
             temp_data_dir, strategy_ir, timeout=120,
@@ -498,7 +498,7 @@ class TestBreakout:
             n_bars=200,
             consolidation_bars=100,
         )
-        write_custom_csv_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
+        write_lean_data(candles, "BTCUSD", datetime(2024, 1, 1), temp_data_dir)
 
         returncode, stdout, stderr = run_lean_backtest(
             temp_data_dir, strategy_ir, timeout=120,

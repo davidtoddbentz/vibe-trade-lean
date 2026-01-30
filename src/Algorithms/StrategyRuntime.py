@@ -167,14 +167,13 @@ class StrategyRuntime(QCAlgorithm):
         self.Settings.MinimumOrderMarginPortfolioPercentage = 0
 
         # Mode selection:
-        # - Custom data mode (default): uses PythonData (CustomCryptoData) + CSV files in /Data
-        #   Works with any symbol, any resolution. Used for backtesting.
-        # - LEAN-native mode: uses AddCrypto + LEAN data layout (/Data/crypto/{market}/...)
-        #   Requires symbols in LEAN's symbol-properties DB. Used for live trading.
-        #   Opt-in via USE_LEAN_NATIVE_DATA=true env var or parameter.
-        use_native_env = os.getenv("USE_LEAN_NATIVE_DATA", "").strip().lower()
-        use_native_param = (self.GetParameter("use_lean_native_data") or "").strip().lower()
-        self.use_custom_data_mode = not ((use_native_env == "true") or (use_native_param == "true"))
+        # - LEAN-native mode (default): uses AddCrypto + LEAN data layout (/Data/crypto/{market}/...)
+        #   Works with any symbol registered in symbol-properties DB. Used for backtesting + live.
+        # - Custom data mode (opt-in via USE_CUSTOM_DATA_MODE=true): uses PythonData (CustomCryptoData) + CSV
+        #   Legacy fallback. Opt-in via env var or parameter.
+        use_custom_env = os.getenv("USE_CUSTOM_DATA_MODE", "").strip().lower()
+        use_custom_param = (self.GetParameter("use_custom_data_mode") or "").strip().lower()
+        self.use_custom_data_mode = (use_custom_env == "true") or (use_custom_param == "true")
 
         # Data folder parameter is still used for IR IO and outputs
         self.data_folder = self.GetParameter("data_folder") or "/Data"

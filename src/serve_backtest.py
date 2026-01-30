@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import zipfile
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -218,10 +220,11 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         if fee_pct > 0 or slippage_pct > 0:
             logger.info(f"Trading costs in IR: fee_pct={fee_pct}%, slippage_pct={slippage_pct}%")
 
-        # Write inline market data for primary symbol
+        # Write inline market data for primary symbol (LEAN ZIP format for AddCrypto)
         if request.data.bars:
-            candle_count = _write_ohlcv_bars_to_csv(
-                request.data.bars, request.data.symbol, data_dir
+            candle_count = _write_ohlcv_bars_lean_zip(
+                request.data.bars, request.data.symbol,
+                request.data.resolution, data_dir,
             )
             logger.info(f"Using {candle_count} inline bars for primary symbol {request.data.symbol}")
         else:
@@ -239,8 +242,9 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         # Write inline market data for additional symbols (multi-symbol strategies)
         for additional in request.additional_data:
             if additional.bars:
-                additional_count = _write_ohlcv_bars_to_csv(
-                    additional.bars, additional.symbol, data_dir
+                additional_count = _write_ohlcv_bars_lean_zip(
+                    additional.bars, additional.symbol,
+                    additional.resolution, data_dir,
                 )
                 logger.info(f"Using {additional_count} inline bars for {additional.symbol}")
 
@@ -388,6 +392,94 @@ def _write_ohlcv_bars_to_csv(
             ])
 
     logger.info(f"Wrote {len(bars)} bars to {file_path}")
+    return len(bars)
+
+
+def _write_ohlcv_bars_lean_zip(
+    bars: list[OHLCVBar],
+    symbol: str,
+    resolution: str,
+    output_dir: Path,
+    market: str = "coinbase",
+) -> int:
+    """Write OHLCVBar data in LEAN-native ZIP format for AddCrypto().
+
+    Minute data: /Data/crypto/{market}/minute/{symbol}/{YYYYMMDD}_trade.zip
+      CSV rows (no header): ms_since_midnight,open,high,low,close,volume
+
+    Hourly data: /Data/crypto/{market}/hour/{symbol}_trade.zip
+      CSV rows (no header): YYYYMMDD HH:mm,open,high,low,close,volume
+
+    Args:
+        bars: List of OHLCVBar with t (ms timestamp), o, h, l, c, v fields
+        symbol: Trading symbol (e.g., "BTC-USD", "TESTUSD")
+        resolution: Data resolution ("1m", "minute", "1h", "hour")
+        output_dir: Root data directory
+        market: Market name for LEAN path (default: "coinbase")
+
+    Returns:
+        Number of bars written
+    """
+    if not bars:
+        return 0
+
+    # Normalize symbol for LEAN paths: BTC-USD -> btcusd, TESTUSD -> testusd
+    symbol_normalized = symbol.lower().replace("-", "").replace("_", "")
+
+    is_minute = resolution in ("1m", "minute")
+
+    if is_minute:
+        # Group bars by date for per-day ZIP files
+        grouped: dict[str, list[OHLCVBar]] = defaultdict(list)
+        for bar in bars:
+            ts = datetime.fromtimestamp(bar.t / 1000, tz=timezone.utc)
+            date_str = ts.strftime("%Y%m%d")
+            grouped[date_str].append(bar)
+
+        # Write per-day ZIP files
+        base_path = output_dir / "crypto" / market / "minute" / symbol_normalized
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        for date_str, day_bars in grouped.items():
+            csv_lines = []
+            for bar in day_bars:
+                ts = datetime.fromtimestamp(bar.t / 1000, tz=timezone.utc)
+                day_start = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+                ms_since_midnight = int((ts - day_start).total_seconds() * 1000)
+                csv_lines.append(
+                    f"{ms_since_midnight},{bar.o},{bar.h},{bar.low},{bar.c},{bar.v}"
+                )
+
+            zip_path = base_path / f"{date_str}_trade.zip"
+            csv_filename = f"{date_str}_trade.csv"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr(csv_filename, "\n".join(csv_lines))
+
+        logger.info(
+            f"Wrote {len(bars)} minute bars across {len(grouped)} ZIPs "
+            f"to {base_path}"
+        )
+    else:
+        # Hourly/daily: single ZIP with all data
+        base_path = output_dir / "crypto" / market / "hour"
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        csv_lines = []
+        for bar in bars:
+            ts = datetime.fromtimestamp(bar.t / 1000, tz=timezone.utc)
+            time_str = ts.strftime("%Y%m%d %H:%M")
+            csv_lines.append(
+                f"{time_str},{bar.o},{bar.h},{bar.low},{bar.c},{bar.v}"
+            )
+
+        zip_path = base_path / f"{symbol_normalized}_trade.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{symbol_normalized}.csv", "\n".join(csv_lines))
+
+        logger.info(
+            f"Wrote {len(bars)} hourly bars to {zip_path}"
+        )
+
     return len(bars)
 
 
