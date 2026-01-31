@@ -187,6 +187,8 @@ def generate_report(
     strategy_id: str,
     strategy_name: str,
     symbol: str,
+    ohlcv_bars: list[dict[str, Any]] | None = None,
+    indicator_values: dict[str, list[dict[str, Any]]] | None = None,
     log_func: Callable[[str], None],
 ) -> dict[str, Any]:
     """Generate backtest report and write to file.
@@ -239,6 +241,11 @@ def generate_report(
     # Add accumulation summary if present
     if accumulation_summary:
         output["accumulation_summary"] = accumulation_summary
+
+    if ohlcv_bars:
+        output["ohlcv_bars"] = ohlcv_bars
+    if indicator_values:
+        output["indicators"] = indicator_values
 
     return output
 

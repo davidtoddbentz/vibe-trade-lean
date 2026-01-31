@@ -150,6 +150,8 @@ class LEANBacktestResponse(BaseModel):
     summary: LEANBacktestSummary | None = None
     # Full equity curve data with cash/holdings breakdown
     equity_curve: list[EquityPoint] | list[dict] | None = None
+    ohlcv_bars: list[dict[str, Any]] | None = None
+    indicators: dict[str, list[dict[str, Any]]] | None = None
     error: str | None = None
 
 
@@ -302,6 +304,8 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         # Build response from strategy output
         trades = []
         summary = None
+        ohlcv_bars = None
+        indicators = None
 
         if strategy_output:
             # Convert trades from output
@@ -339,12 +343,16 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
 
             # Pass through full equity curve data (time, equity, cash, holdings, drawdown)
             equity_curve = strategy_output.get("equity_curve", [])
+            ohlcv_bars = strategy_output.get("ohlcv_bars")
+            indicators = strategy_output.get("indicators")
 
         return LEANBacktestResponse(
             status="success",
             trades=trades,
             summary=summary,
             equity_curve=equity_curve if strategy_output else None,
+            ohlcv_bars=ohlcv_bars if strategy_output else None,
+            indicators=indicators if strategy_output else None,
         )
 
 

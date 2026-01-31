@@ -6,7 +6,7 @@ Replaces untyped dicts for lots, fills, equity points, and tracking state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass
@@ -101,3 +101,5 @@ class TrackingState:
     bar_count: int = 0
     pending_entry: PendingEntry | None = None  # For deferred limit/stop fills
     deferred_on_fill_ops: list = field(default_factory=list)  # StateOps to run on next OnData
+    ohlcv_bars: list[dict[str, Any]] = field(default_factory=list)
+    indicator_values: dict[str, list[dict[str, Any]]] = field(default_factory=dict)

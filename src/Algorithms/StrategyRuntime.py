@@ -181,6 +181,8 @@ class StrategyRuntime(QCAlgorithm):
 
         # Trade tracking for output (lot-based for accumulation support)
         self.tracking = TrackingState(peak_equity=initial_cash)
+        self.tracking.ohlcv_bars = []
+        self.tracking.indicator_values = {}
 
         # Last fill info from LEAN's OnOrderEvent (for accurate lot pricing)
         self._last_fill = None
@@ -288,6 +290,16 @@ class StrategyRuntime(QCAlgorithm):
                 self.tracking.pending_entry = None
 
         bar = data[self.symbol]
+        self.tracking.ohlcv_bars.append(
+            {
+                "time": str(bar.EndTime),
+                "open": float(bar.Open),
+                "high": float(bar.High),
+                "low": float(bar.Low),
+                "close": float(bar.Close),
+                "volume": float(bar.Volume),
+            }
+        )
 
         # Execute deferred on_fill state ops from limit/stop fills (queued in OnOrderEvent)
         if self.tracking.deferred_on_fill_ops:
@@ -312,6 +324,21 @@ class StrategyRuntime(QCAlgorithm):
         # Wait for all indicators to be ready
         if not check_indicators_ready(self.indicator_registry, is_indicator_ready):
             return
+
+        current_time = str(self.Time)
+        for indicator_name, indicator in self.indicators.items():
+            if indicator is None or not getattr(indicator, "IsReady", False):
+                continue
+            if hasattr(indicator, "UpperBand") and hasattr(indicator, "MiddleBand") and hasattr(indicator, "LowerBand"):
+                point = {
+                    "time": current_time,
+                    "upper": float(indicator.UpperBand.Current.Value),
+                    "middle": float(indicator.MiddleBand.Current.Value),
+                    "lower": float(indicator.LowerBand.Current.Value),
+                }
+            else:
+                point = {"time": current_time, "value": float(indicator.Current.Value)}
+            self.tracking.indicator_values.setdefault(indicator_name, []).append(point)
 
         # Run on_bar hooks every bar (for state tracking like cross detection)
         self._run_on_bar(bar)
@@ -591,6 +618,8 @@ class StrategyRuntime(QCAlgorithm):
             strategy_id=self.ir.strategy_id or "unknown",
             strategy_name=self.ir.strategy_name or "Unknown",
             symbol=str(self.symbol),
+            ohlcv_bars=self.tracking.ohlcv_bars,
+            indicator_values=self.tracking.indicator_values,
             log_func=self.Log,
         )
 
