@@ -363,10 +363,13 @@ def _write_ohlcv_bars_lean_zip(
     Hourly data: /Data/crypto/{market}/hour/{symbol}_trade.zip
       CSV rows (no header): YYYYMMDD HH:mm,open,high,low,close,volume
 
+    Daily data: /Data/crypto/{market}/daily/{symbol}_trade.zip
+      CSV rows (no header): YYYYMMDD 00:00,open,high,low,close,volume
+
     Args:
         bars: List of OHLCVBar with t (ms timestamp), o, h, l, c, v fields
         symbol: Trading symbol (e.g., "BTC-USD", "TESTUSD")
-        resolution: Data resolution ("1m", "minute", "1h", "hour")
+        resolution: Data resolution ("1m", "5m", "15m", "1h", "4h", "1d")
         output_dir: Root data directory
         market: Market name for LEAN path (default: "coinbase")
 
@@ -379,7 +382,9 @@ def _write_ohlcv_bars_lean_zip(
     # Normalize symbol for LEAN paths: BTC-USD -> btcusd, TESTUSD -> testusd
     symbol_normalized = symbol.lower().replace("-", "").replace("_", "")
 
-    is_minute = resolution in ("1m", "minute")
+    # Determine resolution type
+    is_minute = resolution in ("1m", "minute", "5m", "15m")
+    is_daily = resolution in ("1d", "daily")
 
     if is_minute:
         # Group bars by date for per-day ZIP files
@@ -412,8 +417,29 @@ def _write_ohlcv_bars_lean_zip(
             f"Wrote {len(bars)} minute bars across {len(grouped)} ZIPs "
             f"to {base_path}"
         )
+    elif is_daily:
+        # Daily: /crypto/{market}/daily/{symbol}_trade.zip
+        base_path = output_dir / "crypto" / market / "daily"
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        csv_lines = []
+        for bar in bars:
+            ts = datetime.fromtimestamp(bar.t / 1000, tz=timezone.utc)
+            # Daily format: YYYYMMDD 00:00 (always midnight)
+            time_str = ts.strftime("%Y%m%d") + " 00:00"
+            csv_lines.append(
+                f"{time_str},{bar.o},{bar.h},{bar.low},{bar.c},{bar.v}"
+            )
+
+        zip_path = base_path / f"{symbol_normalized}_trade.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{symbol_normalized}.csv", "\n".join(csv_lines))
+
+        logger.info(
+            f"Wrote {len(bars)} daily bars to {zip_path}"
+        )
     else:
-        # Hourly/daily: single ZIP with all data
+        # Hourly (1h, 4h): /crypto/{market}/hour/{symbol}_trade.zip
         base_path = output_dir / "crypto" / market / "hour"
         base_path.mkdir(parents=True, exist_ok=True)
 
