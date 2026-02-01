@@ -2,7 +2,6 @@
 
 Phase 12: Extracted from StrategyRuntime.
 """
-
 from __future__ import annotations
 
 from typing import Any
@@ -181,6 +180,7 @@ def execute_action(
         return None
 
     if isinstance(action, SetHoldingsAction):
+        
         # Non-market orders: compute quantity and dispatch to typed order API
         if action.order_type != "market":
             return _execute_typed_order(action, ctx, bar)
@@ -193,6 +193,46 @@ def execute_action(
         if sizing_mode == "pct_equity":
             # MinimumOrderMarginPortfolioPercentage=0 is set in Initialize(),
             # so SetHoldings works correctly for small orders
+            
+            # Check if we're in accumulate mode - need to ADD allocation to current position
+            # instead of setting target allocation (which is the default SetHoldings behavior)
+            is_accumulate = (
+                action.position_policy is not None
+                and action.position_policy.mode in ("accumulate", "scale_in")
+            )
+            
+            if is_accumulate:
+                # Accumulate mode: convert pct_equity to incremental MarketOrder
+                # SetHoldings sets TARGET allocation, but we want to ADD to position
+                ctx.log(f"🔵 ACCUMULATE MODE: allocation={action.allocation}")
+                price = float(bar.Close) if bar else ctx.securities[ctx.symbol].Price
+                equity = float(ctx.portfolio.TotalPortfolioValue)
+                if equity <= 0 or price <= 0:
+                    ctx.log(f"   Cannot compute accumulate quantity: equity={equity}, price={price}")
+                    return
+                
+                # Calculate incremental quantity to buy/sell
+                target_notional = abs(action.allocation) * equity
+                sign = 1.0 if action.allocation >= 0 else -1.0
+                
+                # Apply min/max USD clamps
+                if min_usd is not None and target_notional < min_usd:
+                    ctx.log(f"   Skipping accumulate order: ${target_notional:.2f} < min_usd ${min_usd:.2f}")
+                    return
+                if max_usd is not None and target_notional > max_usd:
+                    target_notional = max_usd
+                    ctx.log(f"   Clamping accumulate order to max_usd ${max_usd:.2f}")
+                
+                quantity = sign * (target_notional / price)
+                if quantity != 0:
+                    ctx.market_order(ctx.symbol, quantity)
+                    ctx.log(f"   Accumulate: {abs(action.allocation):.1%} equity = ${target_notional:.2f} -> {abs(quantity):.6f} units")
+                else:
+                    ctx.log("   Skipping accumulate order: computed quantity is zero")
+                return
+            
+            # Standard mode: SetHoldings sets TARGET allocation
+            ctx.log(f"🟡 STANDARD MODE: allocation={action.allocation}, position_policy={action.position_policy}")
             if min_usd is not None or max_usd is not None:
                 # Need to compute notional to clamp
                 price = float(bar.Close) if bar else ctx.securities[ctx.symbol].Price

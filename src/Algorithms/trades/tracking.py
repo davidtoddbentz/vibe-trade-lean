@@ -187,9 +187,9 @@ def generate_report(
     strategy_id: str,
     strategy_name: str,
     symbol: str,
+    log_func: Callable[[str], None],
     ohlcv_bars: list[dict[str, Any]] | None = None,
     indicator_values: dict[str, list[dict[str, Any]]] | None = None,
-    log_func: Callable[[str], None],
 ) -> dict[str, Any]:
     """Generate backtest report and write to file.
 

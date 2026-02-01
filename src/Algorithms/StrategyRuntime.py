@@ -618,9 +618,9 @@ class StrategyRuntime(QCAlgorithm):
             strategy_id=self.ir.strategy_id or "unknown",
             strategy_name=self.ir.strategy_name or "Unknown",
             symbol=str(self.symbol),
+            log_func=self.Log,
             ohlcv_bars=self.tracking.ohlcv_bars,
             indicator_values=self.tracking.indicator_values,
-            log_func=self.Log,
         )
 
         stats = output["statistics"]
