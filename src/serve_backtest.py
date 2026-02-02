@@ -283,14 +283,22 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
         # Copy LEAN data files
         _copy_lean_data_files(data_dir)
 
-        # Copy only StrategyRuntime.py to temp directory
-        # All modules (indicators, conditions, trades, etc.) are already in the Docker image
+        # Copy StrategyRuntime.py and statistics_extraction.py to temp directory
+        # All other modules (indicators, conditions, trades, etc.) are already in the Docker image
         # at /Lean/Algorithm.Python/ and will be accessible via PYTHONPATH
         src_file = ALGO_SRC_DIR / "StrategyRuntime.py"
         if not src_file.exists():
             raise FileNotFoundError(f"Required algorithm file not found: {src_file}")
         shutil.copy(src_file, algo_dir / "StrategyRuntime.py")
         logger.info(f"Copied StrategyRuntime.py to {algo_dir}")
+
+        # Copy statistics_extraction.py (required by StrategyRuntime)
+        stats_file = ALGO_SRC_DIR / "statistics_extraction.py"
+        if stats_file.exists():
+            shutil.copy(stats_file, algo_dir / "statistics_extraction.py")
+            logger.info(f"Copied statistics_extraction.py to {algo_dir}")
+        else:
+            logger.warning(f"statistics_extraction.py not found at {stats_file}")
         
         # Verify modules exist in source directory (they should be in Docker image)
         required_modules = ["indicators", "conditions", "trades", "position", "gates", "costs", "symbols", "ir", "execution", "initialization", "state"]
