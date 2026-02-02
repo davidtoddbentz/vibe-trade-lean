@@ -84,7 +84,7 @@ class LEANTestRunner:
         self.project_root = Path(__file__).parent.parent.parent
 
         self.strategy_runtime_path = strategy_runtime_path or str(
-            self.project_root / "src" / "strategy_runtime.py"
+            self.project_root / "src" / "Algorithms" / "StrategyRuntime.py"
         )
         self.config_path = config_path or str(
             self.project_root / "test" / "config-backtest.json"
@@ -104,35 +104,47 @@ class LEANTestRunner:
             tmp_path = Path(tmp_dir)
 
             # Create data directory structure
+            # LEAN expects: /Data/crypto/{market}/{resolution}/{symbol}/
             data_dir = tmp_path / "data"
-            custom_dir = data_dir / "custom" / scenario.symbol.lower()
-            custom_dir.mkdir(parents=True)
+            crypto_dir = data_dir / "crypto" / "coinbase" / "daily" / scenario.symbol.lower()
+            crypto_dir.mkdir(parents=True)
 
             results_dir = tmp_path / "results"
             results_dir.mkdir()
 
-            # Export test data
+            # Export test data as ZIP (LEAN format for crypto)
             date_str = scenario.start_date.replace("-", "")
-            csv_path = custom_dir / f"{date_str}.csv"
-            scenario.data_builder.export_csv(str(csv_path))
+            zip_path = crypto_dir / f"{date_str}_trade.zip"
+            scenario.data_builder.export_zip(str(zip_path))
 
             # Export strategy IR
             ir_path = data_dir / "strategy_ir.json"
             ir_path.write_text(json.dumps(scenario.strategy_ir, indent=2))
 
+            # Create custom config with IR path parameter
+            config_path = tmp_path / "config.json"
+            with open(self.config_path) as f:
+                base_config = json.load(f)
+            base_config["parameters"] = {"strategy_ir_path": str(ir_path)}
+            config_path.write_text(json.dumps(base_config, indent=2))
+
             # Run LEAN Docker
             log_file = tmp_path / "lean.log"
+
+            # Path to test symbol database
+            test_symbol_db = self.project_root / "test" / "data" / "symbol-properties" / "symbol-properties-database.csv"
+
             cmd = [
                 "docker", "run", "--rm",
-                "-e", "STRATEGY_IR_PATH=/Data/strategy_ir.json",
                 "-e", f"START_DATE={scenario.start_date}",
                 "-e", f"END_DATE={scenario.end_date}",
                 "-e", "SKIP_DATA_DOWNLOAD=1",
-                "-v", f"{data_dir}:/Data:ro",
-                "-v", f"{custom_dir}:/Data/custom/{scenario.symbol.lower()}:ro",
+                "-v", f"{crypto_dir}:/Lean/Data/crypto/coinbase/daily/{scenario.symbol.lower()}:ro",
+                "-v", f"{ir_path}:{str(ir_path)}:ro",
+                "-v", f"{test_symbol_db}:/Lean/Data/symbol-properties/symbol-properties-database.csv:ro",
                 "-v", f"{results_dir}:/Results",
-                "-v", f"{self.strategy_runtime_path}:/Lean/Algorithm.Python/strategy_runtime.py:ro",
-                "-v", f"{self.config_path}:/Lean/Launcher/bin/Debug/config.json:ro",
+                "-v", f"{self.strategy_runtime_path}:/Lean/Algorithm.Python/StrategyRuntime.py:ro",
+                "-v", f"{config_path}:/Lean/Launcher/bin/Debug/config.json:ro",
                 self.image_name,
                 "--config", "/Lean/Launcher/bin/Debug/config.json",
             ]
@@ -207,8 +219,8 @@ class LEANTestRunner:
         for match in re.finditer(error_pattern, log_content):
             errors.append(match.group(1))
 
-        # Check for strategy load
-        strategy_loaded = "Loaded strategy" in log_content
+        # Check for strategy load (StrategyRuntime initialization message)
+        strategy_loaded = "StrategyRuntime initialized" in log_content
 
         entry_count = sum(1 for t in trades if t.action == "ENTRY")
         exit_count = sum(1 for t in trades if t.action == "EXIT")

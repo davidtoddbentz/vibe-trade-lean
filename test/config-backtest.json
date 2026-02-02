@@ -2,7 +2,7 @@
   "environment": "backtesting",
   "algorithm-type-name": "StrategyRuntime",
   "algorithm-language": "Python",
-  "algorithm-location": "/Lean/Algorithm.Python/strategy_runtime.py",
+  "algorithm-location": "/Lean/Algorithm.Python/StrategyRuntime.py",
   "data-folder": "/Lean/Data",
   "results-destination-folder": "/Results",
   "job-user-id": "0",
