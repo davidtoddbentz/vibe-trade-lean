@@ -133,14 +133,44 @@ class EquityPoint(BaseModel):
 
 
 class LEANBacktestSummary(BaseModel):
-    """Summary metrics - matches execution's BacktestSummary model."""
-    total_trades: int
-    winning_trades: int
-    losing_trades: int
-    total_pnl: float
-    total_pnl_pct: float
+    """Summary metrics from LEAN backtest.
+
+    Includes basic custom statistics and LEAN's PortfolioStatistics.
+    All LEAN fields are optional for backward compatibility.
+    """
+    # Basic metrics (required)
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    total_pnl: float = 0.0
+    total_pnl_pct: float = 0.0
     max_drawdown_pct: float = 0.0
+
+    # LEAN PortfolioStatistics (all optional)
     sharpe_ratio: float | None = None
+    sortino_ratio: float | None = None
+    probabilistic_sharpe_ratio: float | None = None
+    information_ratio: float | None = None
+    treynor_ratio: float | None = None
+    compounding_annual_return: float | None = None
+    total_net_profit: float | None = None
+    start_equity: float | None = None
+    end_equity: float | None = None
+    drawdown: float | None = None
+    annual_standard_deviation: float | None = None
+    annual_variance: float | None = None
+    tracking_error: float | None = None
+    value_at_risk_99: float | None = None
+    value_at_risk_95: float | None = None
+    alpha: float | None = None
+    beta: float | None = None
+    win_rate: float | None = None
+    loss_rate: float | None = None
+    average_win_rate: float | None = None
+    average_loss_rate: float | None = None
+    profit_loss_ratio: float | None = None
+    expectancy: float | None = None
+    portfolio_turnover: float | None = None
 
 
 class LEANBacktestResponse(BaseModel):
@@ -333,12 +363,39 @@ async def _run_lean_backtest(request: LEANBacktestRequest) -> LEANBacktestRespon
             total_pnl_pct = (total_pnl / initial_cash) * 100 if initial_cash else 0
 
             summary = LEANBacktestSummary(
+                # Basic metrics from custom calculations
                 total_trades=stats.get("total_trades", len(trades)),
                 winning_trades=stats.get("winning_trades", 0),
                 losing_trades=stats.get("losing_trades", 0),
                 total_pnl=total_pnl,
                 total_pnl_pct=round(total_pnl_pct, 2),
                 max_drawdown_pct=round(strategy_output.get("max_drawdown_pct", 0), 2),
+
+                # LEAN native statistics (extracted in StrategyRuntime)
+                sharpe_ratio=stats.get("sharpe_ratio"),
+                sortino_ratio=stats.get("sortino_ratio"),
+                probabilistic_sharpe_ratio=stats.get("probabilistic_sharpe_ratio"),
+                information_ratio=stats.get("information_ratio"),
+                treynor_ratio=stats.get("treynor_ratio"),
+                compounding_annual_return=stats.get("compounding_annual_return"),
+                total_net_profit=stats.get("total_net_profit"),
+                start_equity=stats.get("start_equity"),
+                end_equity=stats.get("end_equity"),
+                drawdown=stats.get("drawdown"),
+                annual_standard_deviation=stats.get("annual_standard_deviation"),
+                annual_variance=stats.get("annual_variance"),
+                tracking_error=stats.get("tracking_error"),
+                value_at_risk_99=stats.get("value_at_risk_99"),
+                value_at_risk_95=stats.get("value_at_risk_95"),
+                alpha=stats.get("alpha"),
+                beta=stats.get("beta"),
+                win_rate=stats.get("win_rate"),
+                loss_rate=stats.get("loss_rate"),
+                average_win_rate=stats.get("average_win_rate"),
+                average_loss_rate=stats.get("average_loss_rate"),
+                profit_loss_ratio=stats.get("profit_loss_ratio"),
+                expectancy=stats.get("expectancy"),
+                portfolio_turnover=stats.get("portfolio_turnover"),
             )
 
             # Pass through full equity curve data (time, equity, cash, holdings, drawdown)
