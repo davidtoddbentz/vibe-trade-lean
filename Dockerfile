@@ -119,6 +119,7 @@ COPY src/Algorithms/ir/ /Lean/Algorithm.Python/ir/
 COPY src/Algorithms/execution/ /Lean/Algorithm.Python/execution/
 COPY src/Algorithms/initialization/ /Lean/Algorithm.Python/initialization/
 COPY src/Algorithms/state/ /Lean/Algorithm.Python/state/
+COPY src/Algorithms/statistics_extraction.py /Lean/Algorithm.Python/statistics_extraction.py
 COPY src/serve_backtest.py /Lean/serve_backtest.py
 
 # Ensure modular packages are importable by LEAN's Python runtime
