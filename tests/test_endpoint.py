@@ -93,6 +93,8 @@ class TestBacktestEndpointMocked:
 
     def test_returns_success_response_structure(self, client):
         """Successful execution returns proper response structure."""
+        from src.serve_backtest import EquityPoint
+
         mock_response = LEANBacktestResponse(
             status="success",
             trades=[],
@@ -102,8 +104,20 @@ class TestBacktestEndpointMocked:
                 losing_trades=0,
                 total_pnl=0.0,
                 total_pnl_pct=0.0,
+                # LEAN statistics (optional)
+                sharpe_ratio=1.5,
+                sortino_ratio=2.0,
+                win_rate=65.0,
             ),
-            equity_curve=[100000.0],
+            equity_curve=[
+                EquityPoint(
+                    time="2024-01-01T00:00:00",
+                    equity=100000.0,
+                    cash=100000.0,
+                    holdings=0.0,
+                    drawdown=0.0,
+                )
+            ],
         )
 
         with patch(

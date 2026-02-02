@@ -212,6 +212,8 @@ class TestLEANBacktestResponse:
 
     def test_includes_equity_curve(self):
         """Include equity curve in response."""
+        from src.serve_backtest import EquityPoint
+
         response = LEANBacktestResponse(
             status="success",
             trades=[],
@@ -222,6 +224,10 @@ class TestLEANBacktestResponse:
                 total_pnl=0.0,
                 total_pnl_pct=0.0,
             ),
-            equity_curve=[100000.0, 100500.0, 101000.0],
+            equity_curve=[
+                EquityPoint(time="2024-01-01T00:00:00", equity=100000.0, cash=100000.0, holdings=0.0, drawdown=0.0),
+                EquityPoint(time="2024-01-01T01:00:00", equity=100500.0, cash=95000.0, holdings=5500.0, drawdown=0.0),
+                EquityPoint(time="2024-01-01T02:00:00", equity=101000.0, cash=95000.0, holdings=6000.0, drawdown=0.0),
+            ],
         )
         assert len(response.equity_curve) == 3
