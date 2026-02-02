@@ -42,6 +42,7 @@ from execution.context import ExecutionContext
 from execution.types import FillInfo, TrackingState
 from initialization import setup_dates, setup_symbols, setup_rules, setup_trading_costs
 from state import execute_state_op as _execute_state_op_func
+from statistics_extraction import extract_lean_statistics
 
 # Pydantic is required - StrategyIR.model_validate() is used
 # If Pydantic is not available, the algorithm will fail at import time
@@ -622,6 +623,27 @@ class StrategyRuntime(QCAlgorithm):
             ohlcv_bars=self.tracking.ohlcv_bars,
             indicator_values=self.tracking.indicator_values,
         )
+
+        # Extract LEAN native statistics (if available)
+        lean_stats = extract_lean_statistics(self.Statistics)
+
+        # Merge LEAN statistics with custom calculations
+        # LEAN stats take precedence for overlapping fields
+        if lean_stats:
+            # Count non-None statistics
+            available_stats = sum(1 for v in lean_stats.values() if v is not None)
+            output["statistics"].update(lean_stats)
+            self.Log(f"✅ Extracted {available_stats} LEAN statistics")
+
+            # Log key risk-adjusted metrics if available
+            sharpe = lean_stats.get("sharpe_ratio")
+            sortino = lean_stats.get("sortino_ratio")
+            if sharpe is not None:
+                self.Log(f"   Sharpe Ratio: {sharpe:.2f}")
+            if sortino is not None:
+                self.Log(f"   Sortino Ratio: {sortino:.2f}")
+        else:
+            self.Log("⚠️  LEAN statistics unavailable (using fallback calculations)")
 
         stats = output["statistics"]
         total_return = output["total_return_pct"]
