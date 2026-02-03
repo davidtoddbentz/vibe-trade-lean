@@ -56,6 +56,7 @@ COPY vibe-trade-lean/src/Algorithms/ir/ /Lean/Algorithm.Python/ir/
 COPY vibe-trade-lean/src/Algorithms/execution/ /Lean/Algorithm.Python/execution/
 COPY vibe-trade-lean/src/Algorithms/initialization/ /Lean/Algorithm.Python/initialization/
 COPY vibe-trade-lean/src/Algorithms/state/ /Lean/Algorithm.Python/state/
+COPY vibe-trade-lean/src/Algorithms/statistics_extraction.py /Lean/Algorithm.Python/statistics_extraction.py
 COPY vibe-trade-lean/src/serve_backtest.py /Lean/
 
 RUN touch /Lean/src/__init__.py
