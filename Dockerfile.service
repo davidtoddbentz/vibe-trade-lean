@@ -53,6 +53,7 @@ RUN mkdir -p /Lean/src
 # Copy Python modules
 COPY src/data/ /Lean/src/data/
 COPY src/Algorithms/StrategyRuntime.py /Lean/Algorithm.Python/
+COPY src/Algorithms/statistics_extraction.py /Lean/Algorithm.Python/
 COPY src/Algorithms/indicators/ /Lean/Algorithm.Python/indicators/
 COPY src/Algorithms/conditions/ /Lean/Algorithm.Python/conditions/
 COPY src/Algorithms/trades/ /Lean/Algorithm.Python/trades/
