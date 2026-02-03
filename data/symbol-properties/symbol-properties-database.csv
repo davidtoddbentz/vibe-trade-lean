@@ -1,6 +1,26 @@
 market,symbol,type,description,quote_currency,contract_multiplier,minimum_price_variation,lot_size,market_ticker,minimum_order_size,price_magnifier,strike_multiplier
 coinbase,BTCUSD,crypto,Bitcoin-US Dollar,USD,1,0.01,0.00000001,BTC-USD,0.00000001,1,1
 coinbase,BTC-USD,crypto,Bitcoin-US Dollar,USD,1,0.01,0.00000001,BTC-USD,0.00000001,1,1
+coinbase,ETHUSD,crypto,Ethereum-US Dollar,USD,1,0.01,0.00000001,ETH-USD,0.00000001,1,1
+coinbase,ETH-USD,crypto,Ethereum-US Dollar,USD,1,0.01,0.00000001,ETH-USD,0.00000001,1,1
+coinbase,SOLUSD,crypto,Solana-US Dollar,USD,1,0.01,0.00000001,SOL-USD,0.00000001,1,1
+coinbase,SOL-USD,crypto,Solana-US Dollar,USD,1,0.01,0.00000001,SOL-USD,0.00000001,1,1
+coinbase,ADAUSD,crypto,Cardano-US Dollar,USD,1,0.000001,0.00000001,ADA-USD,0.00000001,1,1
+coinbase,ADA-USD,crypto,Cardano-US Dollar,USD,1,0.000001,0.00000001,ADA-USD,0.00000001,1,1
+coinbase,DOGEUSD,crypto,Dogecoin-US Dollar,USD,1,0.00001,0.00000001,DOGE-USD,0.00000001,1,1
+coinbase,DOGE-USD,crypto,Dogecoin-US Dollar,USD,1,0.00001,0.00000001,DOGE-USD,0.00000001,1,1
+coinbase,XRPUSD,crypto,XRP-US Dollar,USD,1,0.0001,0.00000001,XRP-USD,0.00000001,1,1
+coinbase,XRP-USD,crypto,XRP-US Dollar,USD,1,0.0001,0.00000001,XRP-USD,0.00000001,1,1
 gdax,BTCUSD,crypto,Bitcoin-US Dollar,USD,1,0.01,0.00000001,BTC-USD,0.00000001,1,1
 gdax,BTC-USD,crypto,Bitcoin-US Dollar,USD,1,0.01,0.00000001,BTC-USD,0.00000001,1,1
+gdax,ETHUSD,crypto,Ethereum-US Dollar,USD,1,0.01,0.00000001,ETH-USD,0.00000001,1,1
+gdax,ETH-USD,crypto,Ethereum-US Dollar,USD,1,0.01,0.00000001,ETH-USD,0.00000001,1,1
+gdax,SOLUSD,crypto,Solana-US Dollar,USD,1,0.01,0.00000001,SOL-USD,0.00000001,1,1
+gdax,SOL-USD,crypto,Solana-US Dollar,USD,1,0.01,0.00000001,SOL-USD,0.00000001,1,1
+gdax,ADAUSD,crypto,Cardano-US Dollar,USD,1,0.000001,0.00000001,ADA-USD,0.00000001,1,1
+gdax,ADA-USD,crypto,Cardano-US Dollar,USD,1,0.000001,0.00000001,ADA-USD,0.00000001,1,1
+gdax,DOGEUSD,crypto,Dogecoin-US Dollar,USD,1,0.00001,0.00000001,DOGE-USD,0.00000001,1,1
+gdax,DOGE-USD,crypto,Dogecoin-US Dollar,USD,1,0.00001,0.00000001,DOGE-USD,0.00000001,1,1
+gdax,XRPUSD,crypto,XRP-US Dollar,USD,1,0.0001,0.00000001,XRP-USD,0.00000001,1,1
+gdax,XRP-USD,crypto,XRP-US Dollar,USD,1,0.0001,0.00000001,XRP-USD,0.00000001,1,1
 coinbase,TESTUSD,crypto,Test Token-US Dollar,USD,1,0.01,0.00000001,TESTUSD,0.00000001,1,1
