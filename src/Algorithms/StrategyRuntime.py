@@ -112,6 +112,9 @@ class StrategyRuntime(QCAlgorithm):
             debug_func=self.Debug,
         )
 
+        # Set risk-free rate for Sharpe/Sortino calculations (default 0% for crypto)
+        self.Settings.RiskFreeInterestRate = 0.0
+
         # Load strategy IR and validate once into Pydantic (typed end-to-end for conditions)
         ir_json = self.GetParameter("strategy_ir")
         self.Debug(f"strategy_ir parameter: {ir_json}")
@@ -137,6 +140,14 @@ class StrategyRuntime(QCAlgorithm):
             normalize_symbol_func=self._normalize_symbol,
             log_func=self.Log,
         )
+
+        # Set benchmark for portfolio statistics (Alpha, Beta, etc.)
+        # Use the same symbol as the strategy trades for crypto strategies
+        if self.symbols:
+            # Use first symbol as benchmark (typically BTC-USD for crypto)
+            benchmark_symbol = list(self.symbols.keys())[0]
+            self.SetBenchmark(benchmark_symbol)
+            self.Log(f"📊 Benchmark set to {benchmark_symbol} for portfolio statistics")
 
         # Configure trading costs (fees and slippage)
         costs = setup_trading_costs(self.ir, self.Log)
