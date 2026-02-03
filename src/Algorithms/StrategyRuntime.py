@@ -646,6 +646,14 @@ class StrategyRuntime(QCAlgorithm):
             output["statistics"].update(lean_stats)
             self.Log(f"✅ Extracted {available_stats} LEAN statistics")
 
+            # Log which statistics are populated vs None
+            populated = [k for k, v in lean_stats.items() if v is not None]
+            missing = [k for k, v in lean_stats.items() if v is None]
+            if populated:
+                self.Log(f"   Populated: {', '.join(populated[:5])}...")
+            if missing:
+                self.Log(f"   Missing: {', '.join(missing[:5])}...")
+
             # Log key risk-adjusted metrics if available
             sharpe = lean_stats.get("sharpe_ratio")
             sortino = lean_stats.get("sortino_ratio")
